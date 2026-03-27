@@ -32,6 +32,15 @@ export interface BroadcastRecipient {
   role: EmployeeRole;
 }
 
+export interface EmployeeTelegramRecipient {
+  id: string;
+  telegramId: bigint;
+  fullName: string;
+  employeeCode: string;
+  role: EmployeeRole;
+  isActive: boolean;
+}
+
 function getDbClient(db?: PrismaTransactionClient) {
   return db ?? getPrismaClient();
 }
@@ -93,6 +102,40 @@ export class EmployeeRepository {
       },
       orderBy: [{ role: "asc" }, { fullName: "asc" }],
     });
+  }
+
+  public async listActiveAdminsWithTelegramId(db?: PrismaTransactionClient): Promise<EmployeeTelegramRecipient[]> {
+    const employees = await getDbClient(db).employee.findMany({
+      where: {
+        isActive: true,
+        role: EmployeeRole.ADMIN,
+        telegramId: {
+          not: null,
+        },
+      },
+      select: {
+        id: true,
+        telegramId: true,
+        fullName: true,
+        employeeCode: true,
+        role: true,
+        isActive: true,
+      },
+      orderBy: [{ fullName: "asc" }],
+    });
+
+    return employees.flatMap((employee) =>
+      employee.telegramId === null
+        ? []
+        : [{
+            id: employee.id,
+            telegramId: employee.telegramId,
+            fullName: employee.fullName,
+            employeeCode: employee.employeeCode,
+            role: employee.role,
+            isActive: employee.isActive,
+          }],
+    );
   }
 
   public async listBroadcastRecipients(

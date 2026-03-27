@@ -21,6 +21,7 @@ export const BROADCAST_STATUSES = [
   "FAILED",
 ] as const;
 export const BROADCAST_DELIVERY_STATUSES = ["PENDING", "SENT", "FAILED", "SKIPPED"] as const;
+export const USER_REGISTRATION_REQUEST_STATUSES = ["PENDING", "APPROVED", "REJECTED", "CANCELLED"] as const;
 export const SESSION_STATES = [
   "IDLE",
   "CREATING_REGISTRATION_SELECT_SOURCE",
@@ -45,8 +46,36 @@ export const SESSION_STATES = [
   "ADMIN_BROADCAST_CONFIRM_SEND",
   "ADMIN_BROADCAST_HISTORY",
   "ADMIN_BROADCAST_VIEW_DETAILS",
+  "ADMIN_USER_MENU",
+  "ADMIN_ADD_USER_TELEGRAM_ID",
+  "ADMIN_ADD_USER_FULL_NAME",
+  "ADMIN_ADD_USER_EMPLOYEE_CODE",
+  "ADMIN_ADD_USER_ROLE",
+  "ADMIN_ADD_USER_IS_ACTIVE",
+  "ADMIN_ADD_USER_PREVIEW",
+  "ADMIN_REGISTRATION_REQUESTS_LIST",
+  "ADMIN_REGISTRATION_REQUEST_DETAIL",
+  "ADMIN_REGISTRATION_APPROVE_ROLE",
+  "ADMIN_REGISTRATION_APPROVE_EMPLOYEE_CODE",
+  "ADMIN_REGISTRATION_APPROVE_CONFIRM",
+  "ADMIN_REGISTRATION_REJECT_COMMENT",
+  "GUEST_REGISTRATION_FULL_NAME",
+  "GUEST_REGISTRATION_EMPLOYEE_CODE",
+  "GUEST_REGISTRATION_PHONE",
+  "GUEST_REGISTRATION_ROLE",
+  "GUEST_REGISTRATION_COMMENT",
+  "GUEST_REGISTRATION_PREVIEW",
+  "GUEST_REGISTRATION_STATUS",
 ] as const;
-export const AUDIT_ENTITY_TYPES = ["EMPLOYEE", "REGISTRATION", "SESSION", "REPORT", "BROADCAST", "SYSTEM"] as const;
+export const AUDIT_ENTITY_TYPES = [
+  "EMPLOYEE",
+  "REGISTRATION",
+  "SESSION",
+  "REPORT",
+  "BROADCAST",
+  "USER_REGISTRATION_REQUEST",
+  "SYSTEM",
+] as const;
 
 export type EmployeeRoleValue = (typeof EMPLOYEE_ROLES)[number];
 export type RegistrationSourceValue = (typeof REGISTRATION_SOURCES)[number];
@@ -58,6 +87,7 @@ export type BroadcastTargetTypeValue = (typeof BROADCAST_TARGET_TYPES)[number];
 export type BroadcastContentTypeValue = (typeof BROADCAST_CONTENT_TYPES)[number];
 export type BroadcastStatusValue = (typeof BROADCAST_STATUSES)[number];
 export type BroadcastDeliveryStatusValue = (typeof BROADCAST_DELIVERY_STATUSES)[number];
+export type UserRegistrationRequestStatusValue = (typeof USER_REGISTRATION_REQUEST_STATUSES)[number];
 export type SessionStateValue = (typeof SESSION_STATES)[number];
 export type AuditEntityTypeValue = (typeof AUDIT_ENTITY_TYPES)[number];
 
@@ -126,6 +156,13 @@ export const BROADCAST_DELIVERY_STATUS_LABELS: Record<BroadcastDeliveryStatusVal
   SKIPPED: "Пропущено",
 };
 
+export const USER_REGISTRATION_REQUEST_STATUS_LABELS: Record<UserRegistrationRequestStatusValue, string> = {
+  PENDING: "На рассмотрении",
+  APPROVED: "Одобрена",
+  REJECTED: "Отклонена",
+  CANCELLED: "Отменена",
+};
+
 export const EMPLOYEE_MENU_LABELS = {
   NEW_REGISTRATION: "Новая регистрация",
   MY_REGISTRATIONS_TODAY: "Мои регистрации за сегодня",
@@ -141,13 +178,23 @@ export const ADMIN_MENU_LABELS = {
   REPORTS: "Отчеты",
   EXPORT: "Выгрузка Excel",
   BROADCAST: "Рассылка",
-  EMPLOYEES: "Сотрудники",
+  ADD_USER: "Добавить пользователя",
+  REGISTRATION_REQUESTS: "Заявки на регистрацию",
+  EMPLOYEES: "Пользователи",
   STATISTICS: "Статистика",
   ANTIFRAUD: "Антифрод",
   SEARCH_PHONE: "Поиск по номеру",
   ACTIVE_REGISTRATIONS: "Активные регистрации",
   RELEASE_ACTIVE: "Снять активную регистрацию",
   MANAGE_EMPLOYEES: "Управление сотрудниками",
+} as const;
+
+export const GUEST_MENU_LABELS = {
+  APPLY: "Подать заявку",
+  CHECK_STATUS: "Проверить статус",
+  CANCEL: "Отмена",
+  SKIP: "Пропустить",
+  BACK_TO_START: "К началу",
 } as const;
 
 export const BROADCAST_MENU_LABELS = {
@@ -179,4 +226,19 @@ export const TELEGRAM_CALLBACKS = {
   EMPLOYEE_PAGE: "EMP_PAGE",
   RELEASE_SELECT: "REL_SELECT",
   MENU: "MENU",
+  GUEST_REQUEST_MENU: "GUEST_REQUEST_MENU",
+  GUEST_REQUEST_ROLE: "GUEST_REQUEST_ROLE",
+  GUEST_REQUEST_SUBMIT: "GUEST_REQUEST_SUBMIT",
+  GUEST_REQUEST_CANCEL: "GUEST_REQUEST_CANCEL",
+  ADMIN_ADD_USER_ROLE: "ADMIN_ADD_USER_ROLE",
+  ADMIN_ADD_USER_ACTIVE: "ADMIN_ADD_USER_ACTIVE",
+  ADMIN_ADD_USER_SAVE: "ADMIN_ADD_USER_SAVE",
+  ADMIN_ADD_USER_CANCEL: "ADMIN_ADD_USER_CANCEL",
+  REGISTRATION_REQUEST_VIEW: "REG_REQUEST_VIEW",
+  REGISTRATION_REQUEST_APPROVE: "REG_REQUEST_APPROVE",
+  REGISTRATION_REQUEST_REJECT: "REG_REQUEST_REJECT",
+  REGISTRATION_REQUEST_ROLE: "REG_REQUEST_ROLE",
+  REGISTRATION_REQUEST_CONFIRM: "REG_REQUEST_CONFIRM",
+  REGISTRATION_REQUEST_BACK: "REG_REQUEST_BACK",
+  USER_MANAGEMENT_MENU: "USER_MGMT_MENU",
 } as const;

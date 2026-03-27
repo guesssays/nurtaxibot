@@ -9,14 +9,17 @@ import {
 import { z } from "zod";
 
 import type { AppContext } from "../app/context";
-import { ADMIN_MENU_LABELS, EMPLOYEE_MENU_LABELS, TELEGRAM_CALLBACKS } from "../domain/constants";
+import { ADMIN_MENU_LABELS, EMPLOYEE_MENU_LABELS, GUEST_MENU_LABELS, TELEGRAM_CALLBACKS } from "../domain/constants";
 import { getDayBounds, getTodayBounds, getYesterdayBounds, parseDateInput } from "../lib/date";
 import { env } from "../lib/env";
-import { AppError, ConflictAppError, ForbiddenAppError, NotFoundAppError, ValidationAppError } from "../lib/errors";
+import { AppError, ConflictAppError, NotFoundAppError, ValidationAppError } from "../lib/errors";
 import { normalizeUzPhone } from "../lib/phone";
 import {
   buildAdminExportKeyboard,
   buildAdminReportKeyboard,
+  buildAdminUserActiveKeyboard,
+  buildAdminUserMenuKeyboard,
+  buildAdminUserPreviewKeyboard,
   buildBroadcastContentTypeKeyboard,
   buildBroadcastDetailsKeyboard,
   buildBroadcastHistoryKeyboard,
@@ -26,8 +29,17 @@ import {
   buildBroadcastSkipCaptionKeyboard,
   buildEmployeeToggleKeyboard,
   buildErrorReasonKeyboard,
+  buildGuestEntryKeyboard,
+  buildGuestPreviewKeyboard,
+  buildGuestStatusKeyboard,
   buildMainMenu,
+  buildRegistrationApprovalConfirmKeyboard,
+  buildRegistrationApprovalRoleKeyboard,
+  buildRegistrationRequestDetailsKeyboard,
+  buildRegistrationRequestsKeyboard,
   buildReleaseKeyboard,
+  buildRoleSelectionKeyboard,
+  buildSkipReplyKeyboard,
   buildSourceSelectionKeyboard,
   buildStartConfirmationKeyboard,
 } from "../lib/telegram/keyboards";
@@ -37,10 +49,10 @@ import type {
   ReplyKeyboardMarkup,
   TelegramMessage,
   TelegramPhotoSize,
+  TelegramUser,
   TelegramUpdate,
 } from "../lib/telegram/types";
 import {
-  formatAccessDeniedMessage,
   formatActiveRegistrationMessage,
   formatActiveRegistrations,
   formatAdminGreeting,
@@ -60,6 +72,19 @@ import {
   formatPhoneConflictMessage,
   formatRegistrationHistory,
 } from "../lib/telegram/formatters";
+import {
+  formatAdminAddUserIntro,
+  formatAdminAddUserPreview,
+  formatAdminApprovalPreview,
+  formatGuestRegistrationEntryMessage,
+  formatGuestRegistrationPreview,
+  formatGuestRegistrationStatus,
+  formatInactiveAccountMessage,
+  formatPendingRegistrationRequests,
+  formatRegistrationRequestCreated,
+  formatRegistrationRequestDetails,
+  formatUserCreatedMessage,
+} from "../lib/telegram/user-management-formatters";
 import type { BroadcastDocument, BroadcastPhoto, BroadcastVideo } from "./telegram-bot.types";
 
 const timezoneName = "Asia/Tashkent";
@@ -80,6 +105,32 @@ const adminReleaseSessionSchema = z.object({
 const broadcastDraftSessionSchema = z.object({
   draftId: z.string().min(1),
   contentType: z.nativeEnum(BroadcastContentType),
+});
+
+const guestRegistrationSessionSchema = z.object({
+  fullName: z.string().trim().min(3).max(255).optional(),
+  employeeCode: z.string().trim().min(2).max(64).nullable().optional(),
+  phone: z.string().trim().max(64).nullable().optional(),
+  requestedRole: z.nativeEnum(EmployeeRole).nullable().optional(),
+  comment: z.string().trim().max(1000).nullable().optional(),
+  username: z.string().trim().max(255).nullable().optional(),
+  firstName: z.string().trim().max(255).nullable().optional(),
+  lastName: z.string().trim().max(255).nullable().optional(),
+});
+
+const adminAddUserSessionSchema = z.object({
+  telegramId: z.string().regex(/^\d+$/),
+  fullName: z.string().trim().min(3).max(255).optional(),
+  employeeCode: z.string().trim().min(2).max(64).optional(),
+  role: z.nativeEnum(EmployeeRole).optional(),
+  isActive: z.boolean().optional(),
+});
+
+const adminRegistrationApprovalSessionSchema = z.object({
+  requestId: z.string().min(1),
+  fullName: z.string().trim().min(3).max(255),
+  role: z.nativeEnum(EmployeeRole).optional(),
+  employeeCode: z.string().trim().min(2).max(64).optional(),
 });
 
 function parseCallbackData(data: string): { action: string; value?: string } {
@@ -117,6 +168,26 @@ function isBroadcastState(state: SessionState): boolean {
   return state.startsWith("ADMIN_BROADCAST_");
 }
 
+function isGuestState(state: SessionState): boolean {
+  return state.startsWith("GUEST_REGISTRATION_");
+}
+
+function isSkipText(text: string | null): boolean {
+  return text === GUEST_MENU_LABELS.SKIP;
+}
+
+function getTelegramIdentity(user: TelegramUser | undefined): {
+  username: string | null;
+  firstName: string | null;
+  lastName: string | null;
+} {
+  return {
+    username: user?.username?.trim() || null,
+    firstName: user?.first_name?.trim() || null,
+    lastName: user?.last_name?.trim() || null,
+  };
+}
+
 function getDatabaseHost(): string {
   try {
     return new URL(env.DATABASE_URL).host;
@@ -133,30 +204,63 @@ export class TelegramBotTransport {
     const userId = update.message?.from?.id ?? update.callback_query?.from.id;
     const chatId = update.message?.chat.id ?? update.callback_query?.message?.chat.id;
     const text = update.message?.text?.trim();
-    const shouldLogAuthorization = text === "/start" || text === "/menu" || text === "Меню";
+    const telegramUser = update.message?.from ?? update.callback_query?.from;
+    const shouldLogAuthorization = text === "/start" || text === "/menu" || text === "\u041c\u0435\u043d\u044e";
 
     if (!userId || !chatId) {
       return;
     }
 
     const telegramId = BigInt(userId);
-    let employee: Employee;
 
     try {
-      employee = await this.appContext.authService.authorizeTelegramUser(telegramId);
+      const access = await this.appContext.authService.resolveTelegramAccess(telegramId);
 
       if (shouldLogAuthorization) {
-        this.appContext.logger.info("Telegram authorization result", {
+        const logPayload = {
           fromId: String(userId),
           chatId: String(chatId),
-          employeeFound: true,
-          employeeId: employee.id,
-          employeeRole: employee.role,
-          employeeIsActive: employee.isActive,
-          databaseHost: getDatabaseHost(),
-          authorizationStatus: "AUTHORIZED",
-        });
+          employeeFound: access.employee !== null,
+          employeeId: access.employee?.id ?? null,
+          employeeRole: access.employee?.role ?? null,
+          employeeIsActive: access.employee?.isActive ?? null,
+          databaseHost: access.databaseHost,
+          authorizationStatus: access.status,
+        };
+
+        if (access.status === "AUTHORIZED") {
+          this.appContext.logger.info("Telegram authorization result", logPayload);
+        } else {
+          this.appContext.logger.warn("Telegram authorization result", {
+            ...logPayload,
+            denialReason: access.status === "INACTIVE" ? "EMPLOYEE_INACTIVE" : "EMPLOYEE_NOT_FOUND",
+          });
+        }
       }
+
+      if (access.status === "AUTHORIZED" && access.employee) {
+        try {
+          if (update.callback_query?.data) {
+            await this.handleCallbackQuery(access.employee, chatId, telegramId, update.callback_query.id, update.callback_query.data);
+            return;
+          }
+
+          if (update.message) {
+            await this.handleMessage(access.employee, chatId, telegramId, update.message);
+          }
+        } catch (error: unknown) {
+          await this.handleTransportError(access.employee, chatId, undefined, error);
+        }
+
+        return;
+      }
+
+      if (access.status === "INACTIVE") {
+        await this.handleInactiveUpdate(chatId, telegramId, update, access.employee);
+        return;
+      }
+
+      await this.handleGuestUpdate(chatId, telegramId, update, telegramUser);
     } catch (error: unknown) {
       const denialReason =
         error instanceof AppError && typeof error.details?.reason === "string"
@@ -172,51 +276,64 @@ export class TelegramBotTransport {
           : getDatabaseHost();
 
       if (shouldLogAuthorization) {
-        const logPayload = {
+        this.appContext.logger.error("Telegram authorization result", {
           fromId: String(userId),
           chatId: String(chatId),
           employeeFound,
           denialReason,
           databaseHost,
-          authorizationStatus: error instanceof ForbiddenAppError ? "DENIED" : "FAILED",
+          authorizationStatus: "FAILED",
           errorCode: error instanceof AppError ? error.code : "UNKNOWN",
-        };
-
-        if (error instanceof ForbiddenAppError) {
-          this.appContext.logger.warn("Telegram authorization result", logPayload);
-        } else {
-          this.appContext.logger.error("Telegram authorization result", {
-            ...logPayload,
-            error,
-          });
-        }
+          error,
+        });
       }
 
-      await this.safeSendMessage(
-        chatId,
-        error instanceof ForbiddenAppError
-          ? formatAccessDeniedMessage()
-          : "Не удалось проверить доступ. Попробуйте еще раз через минуту.",
-      );
+      await this.safeSendMessage(chatId, "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c \u0434\u043e\u0441\u0442\u0443\u043f. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u0435\u0449\u0435 \u0440\u0430\u0437 \u0447\u0435\u0440\u0435\u0437 \u043c\u0438\u043d\u0443\u0442\u0443.");
 
       if (update.callback_query) {
-        await this.safeAnswerCallback(update.callback_query.id, "Доступ запрещён.");
+        await this.safeAnswerCallback(update.callback_query.id, "\u0421\u0435\u0440\u0432\u0438\u0441 \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d.");
       }
-
-      return;
     }
+  }
 
+  private async handleInactiveUpdate(
+    chatId: number,
+    telegramId: bigint,
+    update: TelegramUpdate,
+    employee: Employee | null,
+  ): Promise<void> {
+    await this.appContext.sessionService.reset(telegramId, employee?.id ?? null);
+    await this.safeSendMessage(chatId, formatInactiveAccountMessage(employee?.fullName));
+
+    if (update.callback_query) {
+      await this.safeAnswerCallback(update.callback_query.id, "\u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u043f\u043e\u043a\u0430 \u043d\u0435 \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u043e\u0432\u0430\u043d.");
+    }
+  }
+
+  private async handleGuestUpdate(
+    chatId: number,
+    telegramId: bigint,
+    update: TelegramUpdate,
+    telegramUser?: TelegramUser,
+  ): Promise<void> {
     try {
       if (update.callback_query?.data) {
-        await this.handleCallbackQuery(employee, chatId, telegramId, update.callback_query.id, update.callback_query.data);
+        await this.handleGuestCallback(chatId, telegramId, update.callback_query.id, update.callback_query.data, telegramUser);
         return;
       }
 
       if (update.message) {
-        await this.handleMessage(employee, chatId, telegramId, update.message);
+        await this.handleGuestMessage(chatId, telegramId, update.message, telegramUser);
       }
     } catch (error: unknown) {
-      await this.handleTransportError(employee, chatId, undefined, error);
+      await this.safeSendMessage(
+        chatId,
+        error instanceof AppError ? error.message : "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0431\u0440\u0430\u0431\u043e\u0442\u0430\u0442\u044c \u0437\u0430\u044f\u0432\u043a\u0443. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u0435\u0449\u0435 \u0440\u0430\u0437.",
+      );
+
+      if (update.callback_query) {
+        await this.safeAnswerCallback(update.callback_query.id, "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0431\u0440\u0430\u0431\u043e\u0442\u0430\u0442\u044c \u0437\u0430\u044f\u0432\u043a\u0443.");
+      }
     }
   }
 
@@ -336,13 +453,13 @@ export class TelegramBotTransport {
     if (text === EMPLOYEE_MENU_LABELS.SEARCH_ACTIVE) {
       await this.requireEmployeeActive(employee.id);
       await this.appContext.sessionService.setState(telegramId, employee.id, "EMPLOYEE_SEARCH_ACTIVE_PHONE", null);
-      await this.safeSendMessage(chatId, "Введите номер текущей активной регистрации.");
+      await this.safeSendMessage(chatId, "Введите номер текущей активной регистрации без знака +. Пример: 998901234567.");
       return;
     }
 
     if (state === "CREATING_REGISTRATION_ENTER_PHONE") {
       if (!text) {
-        await this.safeSendMessage(chatId, "Отправьте номер телефона: 9 цифр после +998.");
+        await this.safeSendMessage(chatId, "Введите номер без знака +. Пример: 998901234567.");
         return;
       }
 
@@ -394,7 +511,7 @@ export class TelegramBotTransport {
 
     if (state === "EMPLOYEE_SEARCH_ACTIVE_PHONE") {
       if (!text) {
-        await this.safeSendMessage(chatId, "Введите номер для проверки.");
+        await this.safeSendMessage(chatId, "Введите номер для проверки без знака +. Пример: 998901234567.");
         return;
       }
 
@@ -420,6 +537,21 @@ export class TelegramBotTransport {
     sessionData: unknown,
   ): Promise<void> {
     const text = message.text?.trim() ?? null;
+
+    if (text === ADMIN_MENU_LABELS.ADD_USER) {
+      await this.startAdminAddUserFlow(employee, chatId, telegramId);
+      return;
+    }
+
+    if (text === ADMIN_MENU_LABELS.REGISTRATION_REQUESTS) {
+      await this.showPendingRegistrationRequests(employee, chatId, telegramId);
+      return;
+    }
+
+    if (text === ADMIN_MENU_LABELS.MANAGE_EMPLOYEES) {
+      await this.openAdminUserManagementMenu(employee, chatId, telegramId);
+      return;
+    }
 
     if (text === ADMIN_MENU_LABELS.REPORTS) {
       await this.appContext.sessionService.setState(telegramId, employee.id, "ADMIN_REPORT_SELECT_FILTERS", null);
@@ -473,7 +605,7 @@ export class TelegramBotTransport {
 
     if (text === ADMIN_MENU_LABELS.SEARCH_PHONE) {
       await this.appContext.sessionService.setState(telegramId, employee.id, "ADMIN_SEARCH_PHONE", null);
-      await this.safeSendMessage(chatId, "Введите номер для поиска.");
+      await this.safeSendMessage(chatId, "Введите номер для поиска без знака +. Пример: 998901234567.");
       return;
     }
 
@@ -507,23 +639,13 @@ export class TelegramBotTransport {
     }
 
     if (text === ADMIN_MENU_LABELS.EMPLOYEES || text === ADMIN_MENU_LABELS.MANAGE_EMPLOYEES) {
-      const employees = await this.appContext.employeeService.listEmployees();
-      await this.safeSendMessage(chatId, formatEmployeesList(employees), buildMainMenu(employee.role, false));
-
-      for (const item of employees.slice(0, 10)) {
-        await this.safeSendMessage(
-          chatId,
-          `${item.fullName} (${item.employeeCode})`,
-          buildEmployeeToggleKeyboard(item.id, item.isActive),
-        );
-      }
-
+      await this.showUsersList(employee, chatId);
       return;
     }
 
     if (state === "ADMIN_SEARCH_PHONE") {
       if (!text) {
-        await this.safeSendMessage(chatId, "Введите номер телефона.");
+        await this.safeSendMessage(chatId, "Введите номер без знака +. Пример: 998901234567.");
         return;
       }
 
@@ -581,6 +703,120 @@ export class TelegramBotTransport {
       await this.appContext.registrationService.releaseActiveRegistration(employee, releaseData.registrationId, text);
       await this.appContext.sessionService.reset(telegramId, employee.id);
       await this.safeSendMessage(chatId, "Активная регистрация снята.", buildMainMenu(employee.role, false));
+      return;
+    }
+
+    if (state === "ADMIN_ADD_USER_TELEGRAM_ID") {
+      if (!text || !/^\d{5,20}$/.test(text)) {
+        await this.safeSendMessage(chatId, "Отправьте корректный Telegram ID пользователя.");
+        return;
+      }
+
+      await this.appContext.sessionService.setState(telegramId, employee.id, "ADMIN_ADD_USER_FULL_NAME", {
+        telegramId: text,
+      });
+      await this.safeSendMessage(chatId, "Введите ФИО пользователя.");
+      return;
+    }
+
+    if (state === "ADMIN_ADD_USER_FULL_NAME") {
+      const addUserDraft = parseSessionData(sessionData, adminAddUserSessionSchema);
+
+      if (!addUserDraft?.telegramId) {
+        await this.handleStaleAdminAddUserSession(employee, chatId, telegramId);
+        return;
+      }
+
+      if (!text || text.length < 3) {
+        await this.safeSendMessage(chatId, "ФИО должно содержать минимум 3 символа.");
+        return;
+      }
+
+      await this.appContext.sessionService.setState(telegramId, employee.id, "ADMIN_ADD_USER_EMPLOYEE_CODE", {
+        ...addUserDraft,
+        fullName: text,
+      });
+      await this.safeSendMessage(chatId, "Введите код сотрудника.");
+      return;
+    }
+
+    if (state === "ADMIN_ADD_USER_EMPLOYEE_CODE") {
+      const addUserDraft = parseSessionData(sessionData, adminAddUserSessionSchema);
+
+      if (!addUserDraft?.telegramId || !addUserDraft.fullName) {
+        await this.handleStaleAdminAddUserSession(employee, chatId, telegramId);
+        return;
+      }
+
+      if (!text || text.length < 2) {
+        await this.safeSendMessage(chatId, "Код сотрудника должен содержать минимум 2 символа.");
+        return;
+      }
+
+      await this.appContext.sessionService.setState(telegramId, employee.id, "ADMIN_ADD_USER_ROLE", {
+        ...addUserDraft,
+        employeeCode: text,
+      });
+      await this.safeSendMessage(
+        chatId,
+        "Выберите роль пользователя.",
+        buildRoleSelectionKeyboard(TELEGRAM_CALLBACKS.ADMIN_ADD_USER_ROLE, {
+          includeCancel: true,
+        }),
+      );
+      return;
+    }
+
+    if (state === "ADMIN_REGISTRATION_APPROVE_EMPLOYEE_CODE") {
+      const approvalDraft = parseSessionData(sessionData, adminRegistrationApprovalSessionSchema);
+
+      if (!approvalDraft?.requestId || !approvalDraft.role) {
+        await this.handleStaleRegistrationRequestSession(employee, chatId, telegramId);
+        return;
+      }
+
+      if (!text || text.length < 2) {
+        await this.safeSendMessage(chatId, "Введите код сотрудника для одобрения заявки.");
+        return;
+      }
+
+      await this.showRegistrationApprovalPreview(employee, chatId, telegramId, {
+        ...approvalDraft,
+        employeeCode: text,
+      });
+      return;
+    }
+
+    if (state === "ADMIN_REGISTRATION_REJECT_COMMENT") {
+      const rejectDraft = parseSessionData(sessionData, adminRegistrationApprovalSessionSchema);
+
+      if (!rejectDraft?.requestId) {
+        await this.handleStaleRegistrationRequestSession(employee, chatId, telegramId);
+        return;
+      }
+
+      const reviewComment = isSkipText(text) ? null : text;
+      await this.appContext.registrationRequestService.rejectRegistrationRequest(
+        employee,
+        rejectDraft.requestId,
+        reviewComment,
+      );
+      await this.appContext.sessionService.reset(telegramId, employee.id);
+      await this.showMainMenu(employee, chatId, null, "Заявка отклонена.");
+      return;
+    }
+
+    if (
+      state === "ADMIN_USER_MENU" ||
+      state === "ADMIN_ADD_USER_ROLE" ||
+      state === "ADMIN_ADD_USER_IS_ACTIVE" ||
+      state === "ADMIN_ADD_USER_PREVIEW" ||
+      state === "ADMIN_REGISTRATION_REQUESTS_LIST" ||
+      state === "ADMIN_REGISTRATION_REQUEST_DETAIL" ||
+      state === "ADMIN_REGISTRATION_APPROVE_ROLE" ||
+      state === "ADMIN_REGISTRATION_APPROVE_CONFIRM"
+    ) {
+      await this.safeSendMessage(chatId, "Используйте кнопки внутри текущего сценария.");
       return;
     }
 
@@ -731,7 +967,7 @@ export class TelegramBotTransport {
           source,
         });
         await this.safeAnswerCallback(callbackId, "Источник выбран.");
-        await this.safeSendMessage(chatId, "Введите номер: только 9 цифр после +998.");
+        await this.safeSendMessage(chatId, "Введите номер без знака +. Пример: 998901234567.");
         return;
       }
 
@@ -828,6 +1064,65 @@ export class TelegramBotTransport {
         const bounds = value === "TODAY" ? getTodayBounds(timezoneName) : getYesterdayBounds(timezoneName);
         const workbook = await this.appContext.exportService.generateWorkbook(employee, bounds);
         await this.appContext.telegramClient.sendDocument(chatId, workbook.fileName, workbook.buffer, "Excel-выгрузка готова.");
+        return;
+      }
+
+      if (action === TELEGRAM_CALLBACKS.USER_MANAGEMENT_MENU && value) {
+        await this.handleUserManagementMenuCallback(employee, chatId, telegramId, callbackId, value);
+        return;
+      }
+
+      if (action === TELEGRAM_CALLBACKS.ADMIN_ADD_USER_ROLE && value) {
+        await this.handleAdminAddUserRoleCallback(employee, chatId, telegramId, callbackId, session?.dataJson, value);
+        return;
+      }
+
+      if (action === TELEGRAM_CALLBACKS.ADMIN_ADD_USER_ACTIVE && value) {
+        await this.handleAdminAddUserActiveCallback(employee, chatId, telegramId, callbackId, session?.dataJson, value);
+        return;
+      }
+
+      if (action === TELEGRAM_CALLBACKS.ADMIN_ADD_USER_SAVE) {
+        await this.handleAdminAddUserSaveCallback(employee, chatId, telegramId, callbackId, session?.dataJson);
+        return;
+      }
+
+      if (action === TELEGRAM_CALLBACKS.ADMIN_ADD_USER_CANCEL) {
+        await this.safeAnswerCallback(callbackId, "Создание пользователя отменено.");
+        await this.appContext.sessionService.reset(telegramId, employee.id);
+        await this.showMainMenu(employee, chatId, null);
+        return;
+      }
+
+      if (action === TELEGRAM_CALLBACKS.REGISTRATION_REQUEST_VIEW && value) {
+        await this.safeAnswerCallback(callbackId);
+        await this.showRegistrationRequestDetails(employee, chatId, telegramId, value);
+        return;
+      }
+
+      if (action === TELEGRAM_CALLBACKS.REGISTRATION_REQUEST_APPROVE && value) {
+        await this.handleRegistrationRequestApproveCallback(employee, chatId, telegramId, callbackId, value);
+        return;
+      }
+
+      if (action === TELEGRAM_CALLBACKS.REGISTRATION_REQUEST_ROLE && value) {
+        await this.handleRegistrationRequestRoleCallback(employee, chatId, telegramId, callbackId, value);
+        return;
+      }
+
+      if (action === TELEGRAM_CALLBACKS.REGISTRATION_REQUEST_CONFIRM && value) {
+        await this.handleRegistrationRequestConfirmCallback(employee, chatId, telegramId, callbackId, session?.dataJson, value);
+        return;
+      }
+
+      if (action === TELEGRAM_CALLBACKS.REGISTRATION_REQUEST_REJECT && value) {
+        await this.handleRegistrationRequestRejectCallback(employee, chatId, telegramId, callbackId, value);
+        return;
+      }
+
+      if (action === TELEGRAM_CALLBACKS.REGISTRATION_REQUEST_BACK && value) {
+        await this.safeAnswerCallback(callbackId);
+        await this.showPendingRegistrationRequests(employee, chatId, telegramId);
         return;
       }
 
@@ -1282,6 +1577,572 @@ export class TelegramBotTransport {
       fileSize: message.document.file_size,
       caption: message.caption ?? null,
     };
+  }
+
+  private async handleGuestMessage(
+    chatId: number,
+    telegramId: bigint,
+    message: TelegramMessage,
+    telegramUser?: TelegramUser,
+  ): Promise<void> {
+    const session = await this.appContext.sessionService.getSession(telegramId);
+    const state = session?.state ?? "IDLE";
+    const sessionData = session?.dataJson;
+    const text = message.text?.trim() ?? null;
+
+    if (text === "/start" || text === "/menu" || text === "Меню") {
+      await this.appContext.sessionService.reset(telegramId, null);
+      await this.showGuestEntry(chatId, telegramId);
+      return;
+    }
+
+    if (state === "GUEST_REGISTRATION_FULL_NAME") {
+      if (!text || text.length < 3) {
+        await this.safeSendMessage(chatId, "Введите полное ФИО.");
+        return;
+      }
+
+      const identity = getTelegramIdentity(telegramUser);
+      await this.appContext.sessionService.setState(telegramId, null, "GUEST_REGISTRATION_EMPLOYEE_CODE", {
+        fullName: text,
+        username: identity.username,
+        firstName: identity.firstName,
+        lastName: identity.lastName,
+      });
+      await this.safeSendMessage(chatId, "Введите код сотрудника или нажмите «Пропустить».", buildSkipReplyKeyboard());
+      return;
+    }
+
+    if (state === "GUEST_REGISTRATION_EMPLOYEE_CODE") {
+      const draft = parseSessionData(sessionData, guestRegistrationSessionSchema);
+
+      if (!draft?.fullName) {
+        await this.showGuestEntry(chatId, telegramId);
+        return;
+      }
+
+      await this.appContext.sessionService.setState(telegramId, null, "GUEST_REGISTRATION_PHONE", {
+        ...draft,
+        employeeCode: isSkipText(text) ? null : text,
+      });
+      await this.safeSendMessage(chatId, "Введите телефон или нажмите «Пропустить».", buildSkipReplyKeyboard());
+      return;
+    }
+
+    if (state === "GUEST_REGISTRATION_PHONE") {
+      const draft = parseSessionData(sessionData, guestRegistrationSessionSchema);
+
+      if (!draft?.fullName) {
+        await this.showGuestEntry(chatId, telegramId);
+        return;
+      }
+
+      await this.appContext.sessionService.setState(telegramId, null, "GUEST_REGISTRATION_ROLE", {
+        ...draft,
+        phone: isSkipText(text) ? null : text,
+      });
+      await this.safeSendMessage(
+        chatId,
+        "Выберите желаемую роль или пропустите шаг.",
+        buildRoleSelectionKeyboard(TELEGRAM_CALLBACKS.GUEST_REQUEST_ROLE, {
+          includeSkip: true,
+          includeCancel: true,
+        }),
+      );
+      return;
+    }
+
+    if (state === "GUEST_REGISTRATION_ROLE") {
+      await this.safeSendMessage(
+        chatId,
+        "Выберите роль кнопкой ниже.",
+        buildRoleSelectionKeyboard(TELEGRAM_CALLBACKS.GUEST_REQUEST_ROLE, {
+          includeSkip: true,
+          includeCancel: true,
+        }),
+      );
+      return;
+    }
+
+    if (state === "GUEST_REGISTRATION_COMMENT") {
+      const draft = parseSessionData(sessionData, guestRegistrationSessionSchema);
+
+      if (!draft?.fullName) {
+        await this.showGuestEntry(chatId, telegramId);
+        return;
+      }
+
+      const nextDraft = {
+        ...draft,
+        comment: isSkipText(text) ? null : text,
+      };
+      await this.appContext.sessionService.setState(telegramId, null, "GUEST_REGISTRATION_PREVIEW", nextDraft);
+      await this.safeSendMessage(
+        chatId,
+        formatGuestRegistrationPreview({
+          fullName: nextDraft.fullName!,
+          employeeCode: nextDraft.employeeCode ?? null,
+          phone: nextDraft.phone ?? null,
+          requestedRole: nextDraft.requestedRole ?? null,
+          comment: nextDraft.comment ?? null,
+        }),
+        buildGuestPreviewKeyboard(),
+      );
+      return;
+    }
+
+    if (isGuestState(state)) {
+      await this.safeSendMessage(chatId, "Используйте кнопки внутри сценария регистрации или начните заново командой /start.");
+      return;
+    }
+
+    await this.showGuestEntry(chatId, telegramId);
+  }
+
+  private async handleGuestCallback(
+    chatId: number,
+    telegramId: bigint,
+    callbackId: string,
+    data: string,
+    telegramUser?: TelegramUser,
+  ): Promise<void> {
+    const { action, value } = parseCallbackData(data);
+    const session = await this.appContext.sessionService.getSession(telegramId);
+    const identity = getTelegramIdentity(telegramUser);
+
+    if (action === TELEGRAM_CALLBACKS.GUEST_REQUEST_CANCEL) {
+      await this.appContext.sessionService.reset(telegramId, null);
+      await this.safeAnswerCallback(callbackId, "Заявка отменена.");
+      await this.showGuestEntry(chatId, telegramId);
+      return;
+    }
+
+    if (action === TELEGRAM_CALLBACKS.GUEST_REQUEST_MENU) {
+      if (value === "APPLY" || value === "RESTART") {
+        const pending = await this.appContext.registrationRequestService.getPendingRegistrationRequestByTelegramId(telegramId);
+
+        if (pending) {
+          await this.safeAnswerCallback(callbackId, "У вас уже есть активная заявка.");
+          await this.showGuestStatus(chatId, telegramId);
+          return;
+        }
+
+        await this.appContext.sessionService.setState(telegramId, null, "GUEST_REGISTRATION_FULL_NAME", {
+          username: identity.username,
+          firstName: identity.firstName,
+          lastName: identity.lastName,
+        });
+        await this.safeAnswerCallback(callbackId, "Начинаем регистрацию.");
+        await this.safeSendMessage(chatId, "Введите ФИО полностью.");
+        return;
+      }
+
+      if (value === "STATUS") {
+        await this.safeAnswerCallback(callbackId);
+        await this.showGuestStatus(chatId, telegramId);
+        return;
+      }
+
+      await this.safeAnswerCallback(callbackId);
+      await this.appContext.sessionService.reset(telegramId, null);
+      await this.showGuestEntry(chatId, telegramId);
+      return;
+    }
+
+    if (action === TELEGRAM_CALLBACKS.GUEST_REQUEST_ROLE && value) {
+      const draft = parseSessionData(session?.dataJson, guestRegistrationSessionSchema);
+
+      if (!draft?.fullName) {
+        await this.safeAnswerCallback(callbackId, "Сессия устарела.");
+        await this.showGuestEntry(chatId, telegramId);
+        return;
+      }
+
+      const requestedRole = value === "SKIP" ? null : EmployeeRole[value as keyof typeof EmployeeRole];
+
+      if (value !== "SKIP" && !requestedRole) {
+        throw new ValidationAppError("Некорректная роль в заявке.");
+      }
+
+      await this.appContext.sessionService.setState(telegramId, null, "GUEST_REGISTRATION_COMMENT", {
+        ...draft,
+        requestedRole,
+      });
+      await this.safeAnswerCallback(callbackId, "Роль сохранена.");
+      await this.safeSendMessage(chatId, "Добавьте комментарий или нажмите «Пропустить».", buildSkipReplyKeyboard());
+      return;
+    }
+
+    if (action === TELEGRAM_CALLBACKS.GUEST_REQUEST_SUBMIT) {
+      const draft = parseSessionData(session?.dataJson, guestRegistrationSessionSchema);
+
+      if (!draft?.fullName) {
+        await this.safeAnswerCallback(callbackId, "Сессия устарела.");
+        await this.showGuestEntry(chatId, telegramId);
+        return;
+      }
+
+      const result = await this.appContext.registrationRequestService.createRegistrationRequest({
+        telegramId,
+        username: draft.username ?? identity.username,
+        firstName: draft.firstName ?? identity.firstName,
+        lastName: draft.lastName ?? identity.lastName,
+        fullName: draft.fullName,
+        employeeCode: draft.employeeCode ?? null,
+        phone: draft.phone ?? null,
+        requestedRole: draft.requestedRole ?? null,
+        comment: draft.comment ?? null,
+      });
+
+      await this.appContext.sessionService.reset(telegramId, null);
+      await this.safeAnswerCallback(callbackId, result.created ? "Заявка отправлена." : "Заявка уже находится на рассмотрении.");
+      await this.safeSendMessage(
+        chatId,
+        result.created ? formatRegistrationRequestCreated() : formatGuestRegistrationStatus(result.request, timezoneName),
+        buildGuestStatusKeyboard(true),
+      );
+      return;
+    }
+
+    await this.safeAnswerCallback(callbackId, "Недоступное действие.");
+    await this.showGuestEntry(chatId, telegramId);
+  }
+
+  private async showGuestEntry(chatId: number, telegramId: bigint): Promise<void> {
+    const latestRequest = await this.appContext.registrationRequestService.getLatestRegistrationRequestByTelegramId(telegramId);
+    await this.safeSendMessage(chatId, formatGuestRegistrationEntryMessage(), buildGuestEntryKeyboard());
+
+    if (latestRequest) {
+      await this.safeSendMessage(
+        chatId,
+        formatGuestRegistrationStatus(latestRequest, timezoneName),
+        buildGuestStatusKeyboard(latestRequest.status === "PENDING"),
+      );
+    }
+  }
+
+  private async showGuestStatus(chatId: number, telegramId: bigint): Promise<void> {
+    const latestRequest = await this.appContext.registrationRequestService.getLatestRegistrationRequestByTelegramId(telegramId);
+    await this.appContext.sessionService.setState(telegramId, null, "GUEST_REGISTRATION_STATUS", null);
+    await this.safeSendMessage(
+      chatId,
+      formatGuestRegistrationStatus(latestRequest, timezoneName),
+      buildGuestStatusKeyboard(latestRequest?.status === "PENDING"),
+    );
+  }
+
+  private async openAdminUserManagementMenu(employee: Employee, chatId: number, telegramId: bigint): Promise<void> {
+    if (employee.role !== EmployeeRole.ADMIN) {
+      throw new ValidationAppError("Раздел управления пользователями доступен только администратору.");
+    }
+
+    await this.appContext.sessionService.setState(telegramId, employee.id, "ADMIN_USER_MENU", null);
+    await this.safeSendMessage(chatId, "Управление пользователями. Выберите действие.", buildAdminUserMenuKeyboard());
+  }
+
+  private async startAdminAddUserFlow(employee: Employee, chatId: number, telegramId: bigint): Promise<void> {
+    if (employee.role !== EmployeeRole.ADMIN) {
+      throw new ValidationAppError("Добавление пользователей доступно только администратору.");
+    }
+
+    await this.appContext.sessionService.setState(telegramId, employee.id, "ADMIN_ADD_USER_TELEGRAM_ID", null);
+    await this.safeSendMessage(chatId, formatAdminAddUserIntro());
+  }
+
+  private async showUsersList(employee: Employee, chatId: number): Promise<void> {
+    const employees = await this.appContext.employeeService.listEmployees();
+    await this.safeSendMessage(chatId, formatEmployeesList(employees), buildMainMenu(employee.role, false));
+
+    for (const item of employees.slice(0, 10)) {
+      await this.safeSendMessage(
+        chatId,
+        `${item.fullName} (${item.employeeCode})`,
+        buildEmployeeToggleKeyboard(item.id, item.isActive),
+      );
+    }
+  }
+
+  private async showPendingRegistrationRequests(employee: Employee, chatId: number, telegramId: bigint): Promise<void> {
+    const requests = await this.appContext.registrationRequestService.listPendingRegistrationRequests(employee, 10);
+    await this.appContext.sessionService.setState(telegramId, employee.id, "ADMIN_REGISTRATION_REQUESTS_LIST", null);
+    await this.safeSendMessage(
+      chatId,
+      formatPendingRegistrationRequests(requests, timezoneName),
+      buildRegistrationRequestsKeyboard(requests.map((request) => request.id)),
+    );
+  }
+
+  private async showRegistrationRequestDetails(
+    employee: Employee,
+    chatId: number,
+    telegramId: bigint,
+    requestId: string,
+  ): Promise<void> {
+    const request = await this.appContext.registrationRequestService.getRegistrationRequestDetails(employee, requestId);
+    await this.appContext.sessionService.setState(telegramId, employee.id, "ADMIN_REGISTRATION_REQUEST_DETAIL", {
+      requestId,
+      fullName: request.fullName,
+    });
+    await this.safeSendMessage(
+      chatId,
+      formatRegistrationRequestDetails(request, timezoneName),
+      buildRegistrationRequestDetailsKeyboard(request.id),
+    );
+  }
+
+  private async showRegistrationApprovalPreview(
+    employee: Employee,
+    chatId: number,
+    telegramId: bigint,
+    draft: z.infer<typeof adminRegistrationApprovalSessionSchema>,
+  ): Promise<void> {
+    if (!draft.requestId || !draft.role || !draft.employeeCode || !draft.fullName) {
+      await this.handleStaleRegistrationRequestSession(employee, chatId, telegramId);
+      return;
+    }
+
+    const request = await this.appContext.registrationRequestService.getRegistrationRequestDetails(employee, draft.requestId);
+    const existingEmployee = await this.appContext.userManagementService.getEmployeeByTelegramId(request.telegramId);
+
+    await this.appContext.sessionService.setState(telegramId, employee.id, "ADMIN_REGISTRATION_APPROVE_CONFIRM", draft);
+    await this.safeSendMessage(
+      chatId,
+      formatAdminApprovalPreview({
+        request,
+        role: draft.role,
+        employeeCode: draft.employeeCode,
+        fullName: draft.fullName,
+        willReactivateExistingEmployee: Boolean(existingEmployee),
+      }),
+      buildRegistrationApprovalConfirmKeyboard(request.id),
+    );
+  }
+
+  private async handleUserManagementMenuCallback(
+    employee: Employee,
+    chatId: number,
+    telegramId: bigint,
+    callbackId: string,
+    value: string,
+  ): Promise<void> {
+    if (value === "ADD") {
+      await this.safeAnswerCallback(callbackId);
+      await this.startAdminAddUserFlow(employee, chatId, telegramId);
+      return;
+    }
+
+    if (value === "REQUESTS") {
+      await this.safeAnswerCallback(callbackId);
+      await this.showPendingRegistrationRequests(employee, chatId, telegramId);
+      return;
+    }
+
+    if (value === "USERS") {
+      await this.safeAnswerCallback(callbackId);
+      await this.showUsersList(employee, chatId);
+      return;
+    }
+
+    await this.safeAnswerCallback(callbackId);
+    await this.appContext.sessionService.reset(telegramId, employee.id);
+    await this.showMainMenu(employee, chatId, null);
+  }
+
+  private async handleAdminAddUserRoleCallback(
+    employee: Employee,
+    chatId: number,
+    telegramId: bigint,
+    callbackId: string,
+    sessionData: unknown,
+    value: string,
+  ): Promise<void> {
+    const addUserDraft = parseSessionData(sessionData, adminAddUserSessionSchema);
+
+    if (!addUserDraft?.telegramId || !addUserDraft.fullName || !addUserDraft.employeeCode) {
+      await this.handleStaleAdminAddUserSession(employee, chatId, telegramId);
+      await this.safeAnswerCallback(callbackId, "Сессия устарела.");
+      return;
+    }
+
+    const role = EmployeeRole[value as keyof typeof EmployeeRole];
+
+    if (!role) {
+      throw new ValidationAppError("Некорректная роль пользователя.");
+    }
+
+    await this.appContext.sessionService.setState(telegramId, employee.id, "ADMIN_ADD_USER_IS_ACTIVE", {
+      ...addUserDraft,
+      role,
+    });
+    await this.safeAnswerCallback(callbackId, "Роль сохранена.");
+    await this.safeSendMessage(chatId, "Выберите статус пользователя.", buildAdminUserActiveKeyboard());
+  }
+
+  private async handleAdminAddUserActiveCallback(
+    employee: Employee,
+    chatId: number,
+    telegramId: bigint,
+    callbackId: string,
+    sessionData: unknown,
+    value: string,
+  ): Promise<void> {
+    const addUserDraft = parseSessionData(sessionData, adminAddUserSessionSchema);
+
+    if (!addUserDraft?.telegramId || !addUserDraft.fullName || !addUserDraft.employeeCode || !addUserDraft.role) {
+      await this.handleStaleAdminAddUserSession(employee, chatId, telegramId);
+      await this.safeAnswerCallback(callbackId, "Сессия устарела.");
+      return;
+    }
+
+    const isActive = value === "true";
+    const nextDraft = {
+      ...addUserDraft,
+      isActive,
+    };
+    await this.appContext.sessionService.setState(telegramId, employee.id, "ADMIN_ADD_USER_PREVIEW", nextDraft);
+    await this.safeAnswerCallback(callbackId, "Статус сохранен.");
+    await this.safeSendMessage(
+      chatId,
+      formatAdminAddUserPreview({
+        telegramId: BigInt(nextDraft.telegramId),
+        fullName: nextDraft.fullName!,
+        employeeCode: nextDraft.employeeCode!,
+        role: nextDraft.role!,
+        isActive,
+      }),
+      buildAdminUserPreviewKeyboard(),
+    );
+  }
+
+  private async handleAdminAddUserSaveCallback(
+    employee: Employee,
+    chatId: number,
+    telegramId: bigint,
+    callbackId: string,
+    sessionData: unknown,
+  ): Promise<void> {
+    const addUserDraft = parseSessionData(sessionData, adminAddUserSessionSchema);
+
+    if (!addUserDraft?.telegramId || !addUserDraft.fullName || !addUserDraft.employeeCode || !addUserDraft.role || addUserDraft.isActive === undefined) {
+      await this.handleStaleAdminAddUserSession(employee, chatId, telegramId);
+      await this.safeAnswerCallback(callbackId, "Сессия устарела.");
+      return;
+    }
+
+    const createdEmployee = await this.appContext.userManagementService.createEmployeeByAdmin(employee, {
+      telegramId: BigInt(addUserDraft.telegramId),
+      fullName: addUserDraft.fullName,
+      employeeCode: addUserDraft.employeeCode,
+      role: addUserDraft.role,
+      isActive: addUserDraft.isActive,
+    });
+
+    await this.appContext.sessionService.reset(telegramId, employee.id);
+    await this.safeAnswerCallback(callbackId, "Пользователь создан.");
+    await this.safeSendMessage(chatId, formatUserCreatedMessage(createdEmployee), buildMainMenu(employee.role, false));
+  }
+
+  private async handleRegistrationRequestApproveCallback(
+    employee: Employee,
+    chatId: number,
+    telegramId: bigint,
+    callbackId: string,
+    requestId: string,
+  ): Promise<void> {
+    const request = await this.appContext.registrationRequestService.getRegistrationRequestDetails(employee, requestId);
+    await this.appContext.sessionService.setState(telegramId, employee.id, "ADMIN_REGISTRATION_APPROVE_ROLE", {
+      requestId,
+      fullName: request.fullName,
+    });
+    await this.safeAnswerCallback(callbackId, "Выберите роль.");
+    await this.safeSendMessage(chatId, "Выберите роль для нового пользователя.", buildRegistrationApprovalRoleKeyboard(requestId));
+  }
+
+  private async handleRegistrationRequestRoleCallback(
+    employee: Employee,
+    chatId: number,
+    telegramId: bigint,
+    callbackId: string,
+    value: string,
+  ): Promise<void> {
+    const [requestId, roleRaw] = value.split(":");
+
+    if (!requestId || !roleRaw) {
+      throw new ValidationAppError("Некорректные данные одобрения заявки.");
+    }
+
+    const role = EmployeeRole[roleRaw as keyof typeof EmployeeRole];
+
+    if (!role) {
+      throw new ValidationAppError("Некорректная роль для заявки.");
+    }
+
+    const request = await this.appContext.registrationRequestService.getRegistrationRequestDetails(employee, requestId);
+    await this.appContext.sessionService.setState(telegramId, employee.id, "ADMIN_REGISTRATION_APPROVE_EMPLOYEE_CODE", {
+      requestId,
+      fullName: request.fullName,
+      role,
+    });
+    await this.safeAnswerCallback(callbackId, "Роль сохранена.");
+    await this.safeSendMessage(chatId, "Введите код сотрудника для одобрения заявки.");
+  }
+
+  private async handleRegistrationRequestConfirmCallback(
+    employee: Employee,
+    chatId: number,
+    telegramId: bigint,
+    callbackId: string,
+    sessionData: unknown,
+    requestId: string,
+  ): Promise<void> {
+    const approvalDraft = parseSessionData(sessionData, adminRegistrationApprovalSessionSchema);
+
+    if (!approvalDraft?.requestId || !approvalDraft.role || !approvalDraft.employeeCode || !approvalDraft.fullName) {
+      await this.handleStaleRegistrationRequestSession(employee, chatId, telegramId);
+      await this.safeAnswerCallback(callbackId, "Сессия устарела.");
+      return;
+    }
+
+    if (approvalDraft.requestId !== requestId) {
+      throw new ValidationAppError("Сессия заявки не совпадает с подтверждением.");
+    }
+
+    await this.appContext.registrationRequestService.approveRegistrationRequest(employee, requestId, {
+      role: approvalDraft.role,
+      employeeCode: approvalDraft.employeeCode,
+      fullName: approvalDraft.fullName,
+      isActive: true,
+    });
+
+    await this.appContext.sessionService.reset(telegramId, employee.id);
+    await this.safeAnswerCallback(callbackId, "Заявка одобрена.");
+    await this.showMainMenu(employee, chatId, null, "Заявка одобрена, пользователь активирован.");
+  }
+
+  private async handleRegistrationRequestRejectCallback(
+    employee: Employee,
+    chatId: number,
+    telegramId: bigint,
+    callbackId: string,
+    requestId: string,
+  ): Promise<void> {
+    const request = await this.appContext.registrationRequestService.getRegistrationRequestDetails(employee, requestId);
+    await this.appContext.sessionService.setState(telegramId, employee.id, "ADMIN_REGISTRATION_REJECT_COMMENT", {
+      requestId,
+      fullName: request.fullName,
+    });
+    await this.safeAnswerCallback(callbackId, "Добавьте комментарий или пропустите.");
+    await this.safeSendMessage(chatId, "Введите комментарий к отклонению или нажмите «Пропустить».", buildSkipReplyKeyboard());
+  }
+
+  private async handleStaleAdminAddUserSession(employee: Employee, chatId: number, telegramId: bigint): Promise<void> {
+    await this.appContext.sessionService.reset(telegramId, employee.id);
+    await this.showMainMenu(employee, chatId, null, "Сессия добавления пользователя устарела. Начните заново.");
+  }
+
+  private async handleStaleRegistrationRequestSession(employee: Employee, chatId: number, telegramId: bigint): Promise<void> {
+    await this.appContext.sessionService.reset(telegramId, employee.id);
+    await this.showMainMenu(employee, chatId, null, "Сессия обработки заявки устарела. Откройте список заявок заново.");
   }
 
   private async handleStaleBroadcastSession(employee: Employee, chatId: number, telegramId: bigint): Promise<void> {

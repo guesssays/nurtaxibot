@@ -2,8 +2,9 @@ import { EmployeeRole } from "@prisma/client";
 
 import { env } from "../lib/env";
 import type { Logger } from "../lib/logger";
-import { formatAntifraudAlert, formatReminderMessage } from "../lib/telegram/formatters";
 import { TelegramClient } from "../lib/telegram/client";
+import { formatAntifraudAlert, formatReminderMessage } from "../lib/telegram/formatters";
+import type { InlineKeyboardMarkup } from "../lib/telegram/types";
 import { EmployeeRepository } from "../repositories/employee.repository";
 import type { RegistrationWithEmployeesRecord } from "../repositories/registration.repository";
 
@@ -14,7 +15,7 @@ export class NotificationService {
     private readonly logger: Logger,
   ) {}
 
-  public async notifyAdmins(message: string): Promise<void> {
+  public async notifyAdmins(message: string, replyMarkup?: InlineKeyboardMarkup): Promise<void> {
     const employees = await this.employeeRepository.listAdminsAndSupervisors();
     const admins = employees.filter((employee) => employee.role === EmployeeRole.ADMIN);
 
@@ -26,6 +27,7 @@ export class NotificationService {
             await this.telegramClient.sendMessage({
               chat_id: admin.telegramId!.toString(),
               text: message,
+              reply_markup: replyMarkup,
             });
           } catch (error: unknown) {
             this.logger.warn("Failed to send admin notification", {
@@ -55,6 +57,25 @@ export class NotificationService {
           }
         }),
     );
+  }
+
+  public async notifyUserByTelegramId(
+    telegramId: bigint | string,
+    message: string,
+    replyMarkup?: InlineKeyboardMarkup,
+  ): Promise<void> {
+    try {
+      await this.telegramClient.sendMessage({
+        chat_id: typeof telegramId === "bigint" ? telegramId.toString() : telegramId,
+        text: message,
+        reply_markup: replyMarkup,
+      });
+    } catch (error: unknown) {
+      this.logger.warn("Failed to send user notification", {
+        telegramId: typeof telegramId === "bigint" ? telegramId.toString() : telegramId,
+        error: error instanceof Error ? error.message : "unknown",
+      });
+    }
   }
 
   public async notifyAntifraud(registration: RegistrationWithEmployeesRecord): Promise<void> {

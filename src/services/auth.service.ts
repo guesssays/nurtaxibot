@@ -1,10 +1,23 @@
 import { EmployeeRole, type Employee } from "@prisma/client";
 
 import { env } from "../lib/env";
-import { ForbiddenAppError, InternalAppError, UnauthorizedAppError, ValidationAppError } from "../lib/errors";
+import {
+  ForbiddenAppError,
+  InternalAppError,
+  UnauthorizedAppError,
+  ValidationAppError,
+} from "../lib/errors";
 import type { Logger } from "../lib/logger";
 import { assertRole } from "../lib/rbac";
 import { EmployeeRepository } from "../repositories/employee.repository";
+
+export type TelegramAccessStatus = "AUTHORIZED" | "INACTIVE" | "NOT_FOUND";
+
+export interface TelegramAccessResult {
+  status: TelegramAccessStatus;
+  employee: Employee | null;
+  databaseHost: string;
+}
 
 export class AuthService {
   public constructor(
@@ -12,12 +25,33 @@ export class AuthService {
     private readonly logger: Logger,
   ) {}
 
-  public async authorizeTelegramUser(telegramId: bigint): Promise<Employee> {
+  public async resolveTelegramAccess(telegramId: bigint): Promise<TelegramAccessResult> {
     const databaseHost = this.getDatabaseHost();
-    let employee: Employee | null;
 
     try {
-      employee = await this.employeeRepository.findByTelegramId(telegramId);
+      const employee = await this.employeeRepository.findByTelegramId(telegramId);
+
+      if (!employee) {
+        return {
+          status: "NOT_FOUND",
+          employee: null,
+          databaseHost,
+        };
+      }
+
+      if (!employee.isActive) {
+        return {
+          status: "INACTIVE",
+          employee,
+          databaseHost,
+        };
+      }
+
+      return {
+        status: "AUTHORIZED",
+        employee,
+        databaseHost,
+      };
     } catch (error: unknown) {
       this.logger.error("Telegram authorization query failed", {
         telegramId: telegramId.toString(),
@@ -31,35 +65,43 @@ export class AuthService {
         databaseHost,
       });
     }
+  }
 
-    if (!employee) {
+  public async authorizeTelegramUser(telegramId: bigint): Promise<Employee> {
+    const access = await this.resolveTelegramAccess(telegramId);
+
+    if (access.status === "NOT_FOUND") {
       throw new ForbiddenAppError(
         "Доступ запрещен. Обратитесь к администратору, чтобы вас добавили или активировали.",
         {
           reason: "EMPLOYEE_NOT_FOUND",
           telegramId: telegramId.toString(),
-          databaseHost,
+          databaseHost: access.databaseHost,
           employeeFound: false,
         },
       );
     }
 
-    if (!employee.isActive) {
+    if (access.status === "INACTIVE") {
       throw new ForbiddenAppError(
-        "Доступ запрещен. Обратитесь к администратору, чтобы вас добавили или активировали.",
+        "Ваш аккаунт существует, но пока не активирован. Обратитесь к администратору.",
         {
           reason: "EMPLOYEE_INACTIVE",
           telegramId: telegramId.toString(),
-          databaseHost,
+          databaseHost: access.databaseHost,
           employeeFound: true,
-          employeeId: employee.id,
-          isActive: employee.isActive,
-          role: employee.role,
+          employeeId: access.employee?.id ?? null,
+          isActive: access.employee?.isActive ?? false,
+          role: access.employee?.role ?? null,
         },
       );
     }
 
-    return employee;
+    if (!access.employee) {
+      throw new InternalAppError("Authorized access result is missing employee.");
+    }
+
+    return access.employee;
   }
 
   public async authorizeHttpActor(

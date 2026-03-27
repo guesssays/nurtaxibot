@@ -73,6 +73,13 @@ enum BroadcastDeliveryStatus {
   SKIPPED
 }
 
+enum UserRegistrationRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
 enum SessionState {
   IDLE
   CREATING_REGISTRATION_SELECT_SOURCE
@@ -97,6 +104,26 @@ enum SessionState {
   ADMIN_BROADCAST_CONFIRM_SEND
   ADMIN_BROADCAST_HISTORY
   ADMIN_BROADCAST_VIEW_DETAILS
+  ADMIN_USER_MENU
+  ADMIN_ADD_USER_TELEGRAM_ID
+  ADMIN_ADD_USER_FULL_NAME
+  ADMIN_ADD_USER_EMPLOYEE_CODE
+  ADMIN_ADD_USER_ROLE
+  ADMIN_ADD_USER_IS_ACTIVE
+  ADMIN_ADD_USER_PREVIEW
+  ADMIN_REGISTRATION_REQUESTS_LIST
+  ADMIN_REGISTRATION_REQUEST_DETAIL
+  ADMIN_REGISTRATION_APPROVE_ROLE
+  ADMIN_REGISTRATION_APPROVE_EMPLOYEE_CODE
+  ADMIN_REGISTRATION_APPROVE_CONFIRM
+  ADMIN_REGISTRATION_REJECT_COMMENT
+  GUEST_REGISTRATION_FULL_NAME
+  GUEST_REGISTRATION_EMPLOYEE_CODE
+  GUEST_REGISTRATION_PHONE
+  GUEST_REGISTRATION_ROLE
+  GUEST_REGISTRATION_COMMENT
+  GUEST_REGISTRATION_PREVIEW
+  GUEST_REGISTRATION_STATUS
 }
 
 enum AuditEntityType {
@@ -105,6 +132,7 @@ enum AuditEntityType {
   SESSION
   REPORT
   BROADCAST
+  USER_REGISTRATION_REQUEST
   SYSTEM
 }
 
@@ -123,6 +151,8 @@ model Employee {
   cancelledRegistrations Registration[] @relation("cancelled_by")
   createdBroadcasts      Broadcast[]     @relation("broadcast_created_by")
   broadcastDeliveries    BroadcastDelivery[]
+  reviewedRegistrationRequests UserRegistrationRequest[] @relation("registration_request_reviewed_by")
+  approvedRegistrationRequests UserRegistrationRequest[] @relation("registration_request_approved_employee")
   auditLogs              AuditLog[]
   sessions               UserSession[]
 
@@ -231,6 +261,32 @@ model BroadcastDelivery {
   @@index([telegramId], map: "broadcast_deliveries_telegram_id_idx")
   @@index([broadcastId, status], map: "broadcast_deliveries_broadcast_status_idx")
   @@map("broadcast_deliveries")
+}
+
+model UserRegistrationRequest {
+  id                 String                        @id @default(cuid())
+  telegramId         BigInt                        @map("telegram_id")
+  username           String?                       @map("username")
+  firstName          String?                       @map("first_name")
+  lastName           String?                       @map("last_name")
+  fullName           String                        @map("full_name")
+  phone              String?                       @map("phone")
+  requestedRole      EmployeeRole?                 @map("requested_role")
+  employeeCode       String?                       @map("employee_code")
+  comment            String?                       @db.Text
+  status             UserRegistrationRequestStatus @default(PENDING)
+  reviewedByEmployeeId String?                     @map("reviewed_by_employee_id")
+  reviewComment      String?                       @map("review_comment") @db.Text
+  approvedEmployeeId String?                       @map("approved_employee_id")
+  createdAt          DateTime                      @default(now()) @map("created_at")
+  updatedAt          DateTime                      @updatedAt @map("updated_at")
+  reviewedAt         DateTime?                     @map("reviewed_at")
+  reviewedBy         Employee?                     @relation("registration_request_reviewed_by", fields: [reviewedByEmployeeId], references: [id])
+  approvedEmployee   Employee?                     @relation("registration_request_approved_employee", fields: [approvedEmployeeId], references: [id])
+
+  @@index([status, createdAt], map: "user_registration_requests_status_created_at_idx")
+  @@index([telegramId, createdAt], map: "user_registration_requests_telegram_created_at_idx")
+  @@map("user_registration_requests")
 }
 
 model DailyReportSnapshot {

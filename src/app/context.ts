@@ -6,6 +6,7 @@ import { AuditLogRepository } from "../repositories/audit-log.repository";
 import { BroadcastRepository } from "../repositories/broadcast.repository";
 import { DailyReportSnapshotRepository } from "../repositories/daily-report-snapshot.repository";
 import { EmployeeRepository } from "../repositories/employee.repository";
+import { RegistrationRequestRepository } from "../repositories/registration-request.repository";
 import { RegistrationRepository } from "../repositories/registration.repository";
 import { SessionRepository } from "../repositories/session.repository";
 import { AuditService } from "../services/audit.service";
@@ -14,10 +15,12 @@ import { BroadcastService } from "../services/broadcast.service";
 import { EmployeeService } from "../services/employee.service";
 import { ExportService } from "../services/export.service";
 import { NotificationService } from "../services/notification.service";
+import { RegistrationRequestService } from "../services/registration-request.service";
 import { RegistrationService } from "../services/registration.service";
 import { ReminderService } from "../services/reminder.service";
 import { ReportService } from "../services/report.service";
 import { SessionService } from "../services/session.service";
+import { UserManagementService } from "../services/user-management.service";
 
 export interface AppContext {
   logger: Logger;
@@ -25,6 +28,8 @@ export interface AppContext {
   authService: AuthService;
   sessionService: SessionService;
   employeeService: EmployeeService;
+  userManagementService: UserManagementService;
+  registrationRequestService: RegistrationRequestService;
   broadcastService: BroadcastService;
   registrationService: RegistrationService;
   reportService: ReportService;
@@ -41,6 +46,7 @@ export function createAppContext(requestId: string): AppContext {
 
   const prisma = getPrismaClient();
   const employeeRepository = new EmployeeRepository();
+  const registrationRequestRepository = new RegistrationRequestRepository();
   const broadcastRepository = new BroadcastRepository();
   const registrationRepository = new RegistrationRepository();
   const sessionRepository = new SessionRepository();
@@ -53,6 +59,7 @@ export function createAppContext(requestId: string): AppContext {
     employeeRepository,
     logger.child({ service: "notifications" }),
   );
+  const userManagementService = new UserManagementService(employeeRepository, auditService);
 
   void prisma;
 
@@ -61,7 +68,15 @@ export function createAppContext(requestId: string): AppContext {
     telegramClient,
     authService: new AuthService(employeeRepository, logger.child({ service: "auth" })),
     sessionService: new SessionService(sessionRepository),
-    employeeService: new EmployeeService(employeeRepository, auditService),
+    employeeService: new EmployeeService(userManagementService),
+    userManagementService,
+    registrationRequestService: new RegistrationRequestService(
+      registrationRequestRepository,
+      employeeRepository,
+      auditService,
+      notificationService,
+      env.APP_TIMEZONE,
+    ),
     broadcastService: new BroadcastService(
       broadcastRepository,
       employeeRepository,

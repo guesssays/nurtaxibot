@@ -18,6 +18,9 @@ Production-ready Telegram bot for internal WB Taxi driver registration accountin
 ## What is implemented
 
 - employee/admin access by Telegram ID
+- self-registration requests for unknown Telegram users
+- admin approval/rejection flow for registration requests
+- manual user creation by admin directly in Telegram
 - RBAC for `EMPLOYEE`, `ADMIN`, `SUPERVISOR`
 - single registration history table with full lifecycle
 - race-safe start of registration
@@ -27,6 +30,7 @@ Production-ready Telegram bot for internal WB Taxi driver registration accountin
 - broadcast history and delivery-level result tracking
 - employee Telegram flows for start / finish / error / cancel
 - admin Telegram flows for reports, search, antifraud, broadcasts, active registrations and employee activation
+- admin Telegram flows for user creation, registration request review and user toggling
 - Netlify Functions for webhook, reports, exports, broadcasts, employees CRUD and healthcheck
 - daily reports and reminder scheduled functions
 - Excel export with multiple sheets
@@ -66,6 +70,8 @@ npm install
 npm run prisma:migrate:deploy
 ```
 
+This now includes the migration for `user_registration_requests` and the new session/audit enum values used by self-registration flows.
+
 4. Seed the first admin:
 
 ```bash
@@ -88,7 +94,7 @@ curl -X POST "https://YOUR-SITE.netlify.app/.netlify/functions/set-webhook" ^
 
 ## Main scripts
 
-- `npm run build` — Prisma generate + typecheck
+- `npm run build` — Prisma generate
 - `npm run dev` — Netlify local dev server
 - `npm run typecheck` — TypeScript validation
 - `npm test` — business tests

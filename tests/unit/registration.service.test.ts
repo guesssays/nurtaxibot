@@ -43,7 +43,7 @@ describe("RegistrationService", () => {
     });
 
     await expect(
-      service.startRegistration(employee, "901234567", RegistrationSource.TELEGRAM),
+      service.startRegistration(employee, "998901234567", RegistrationSource.TELEGRAM),
     ).rejects.toBeInstanceOf(ConflictAppError);
   });
 
@@ -61,7 +61,7 @@ describe("RegistrationService", () => {
     });
 
     await expect(
-      service.startRegistration(employee, "901234568", RegistrationSource.SITE),
+      service.startRegistration(employee, "998901234568", RegistrationSource.SITE),
     ).rejects.toBeInstanceOf(ConflictAppError);
   });
 
@@ -73,8 +73,8 @@ describe("RegistrationService", () => {
     const service = new RegistrationService(repository as never, auditService as never);
 
     const results = await Promise.allSettled([
-      service.startRegistration(employeeA, "901234567", RegistrationSource.TELEGRAM),
-      service.startRegistration(employeeB, "901234567", RegistrationSource.TELEGRAM),
+      service.startRegistration(employeeA, "998901234567", RegistrationSource.TELEGRAM),
+      service.startRegistration(employeeB, "998901234567", RegistrationSource.TELEGRAM),
     ]);
 
     const fulfilled = results.filter((item) => item.status === "fulfilled");
@@ -152,12 +152,36 @@ describe("RegistrationService", () => {
     expect(result.status).toBe(RegistrationStatus.CANCELLED);
   });
 
+  it("finds phone history by canonical format after normalization", async () => {
+    const admin = createEmployee({ id: "admin1", employeeCode: "ADM-1", role: EmployeeRole.ADMIN });
+    const repository = new InMemoryRegistrationRepository([admin]);
+    const auditService = new InMemoryAuditService();
+    const service = new RegistrationService(repository as never, auditService as never);
+
+    repository.seedRegistration({
+      id: "reg1",
+      phoneE164: "+998901234567",
+      source: RegistrationSource.TELEGRAM,
+      status: RegistrationStatus.SUCCESS,
+      startedByEmployeeId: admin.id,
+      finishedBy: admin,
+      finishedByEmployeeId: admin.id,
+      finishedAt: new Date(),
+      durationSeconds: 240,
+    });
+
+    const history = await service.searchHistoryByPhone(admin, "998901234567");
+
+    expect(history).toHaveLength(1);
+    expect(history[0]?.phoneE164).toBe("+998901234567");
+  });
+
   it("blocks employee from admin-only phone history search", async () => {
     const employee = createEmployee({ id: "emp1", employeeCode: "EMP-1", role: EmployeeRole.EMPLOYEE });
     const repository = new InMemoryRegistrationRepository([employee]);
     const auditService = new InMemoryAuditService();
     const service = new RegistrationService(repository as never, auditService as never);
 
-    await expect(service.searchHistoryByPhone(employee, "901234567")).rejects.toBeInstanceOf(ForbiddenAppError);
+    await expect(service.searchHistoryByPhone(employee, "998901234567")).rejects.toBeInstanceOf(ForbiddenAppError);
   });
 });
