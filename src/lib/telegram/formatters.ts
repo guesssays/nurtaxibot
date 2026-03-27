@@ -348,14 +348,14 @@ export function formatEmployeeRegistrationCompletionMessage(
   const maskedPhone = maskPhoneForEmployee(phoneE164);
 
   if (status === "SUCCESS") {
-    return `Р РµРіРёСЃС‚СЂР°С†РёСЏ СѓСЃРїРµС€РЅРѕ Р·Р°РІРµСЂС€РµРЅР°.\nРќРѕРјРµСЂ: ${maskedPhone}`;
+    return `Регистрация успешно завершена.\nНомер: ${maskedPhone}`;
   }
 
   if (status === "ERROR") {
-    return `Р РµРіРёСЃС‚СЂР°С†РёСЏ РїРµСЂРµРІРµРґРµРЅР° РІ РѕС€РёР±РєСѓ.\nРќРѕРјРµСЂ: ${maskedPhone}`;
+    return `Регистрация завершена с ошибкой.\nНомер: ${maskedPhone}`;
   }
 
-  return `РђРєС‚РёРІРЅР°СЏ СЂРµРіРёСЃС‚СЂР°С†РёСЏ РѕС‚РјРµРЅРµРЅР°.\nРќРѕРјРµСЂ: ${maskedPhone}`;
+  return `Процесс регистрации отменён.\nНомер: ${maskedPhone}`;
 }
 
 export function formatAntifraudAlert(registration: RegistrationWithEmployees, timezoneName: string): string {

@@ -3,10 +3,32 @@ import { describe, expect, it } from "vitest";
 
 import {
   formatActiveRegistrationMessage,
+  formatEmployeeRegistrationCompletionMessage,
   formatRegistrationHistory,
 } from "../../src/lib/telegram/formatters";
 
 describe("telegram phone formatters", () => {
+  it("returns clean russian text for successful completion", () => {
+    const text = formatEmployeeRegistrationCompletionMessage("SUCCESS", "+998901234567");
+
+    expect(text).toBe("Регистрация успешно завершена.\nНомер: ***4567");
+    expect(text).not.toMatch(/РµР|СЃС|РќР|РѕС|С‚С/);
+  });
+
+  it("returns clean russian text for failed completion", () => {
+    const text = formatEmployeeRegistrationCompletionMessage("ERROR", "+998901234567");
+
+    expect(text).toBe("Регистрация завершена с ошибкой.\nНомер: ***4567");
+    expect(text).not.toMatch(/РµР|СЃС|РќР|РѕС|С‚С/);
+  });
+
+  it("returns clean russian text for cancelled completion", () => {
+    const text = formatEmployeeRegistrationCompletionMessage("CANCELLED", "+998901234567");
+
+    expect(text).toBe("Процесс регистрации отменён.\nНомер: ***4567");
+    expect(text).not.toMatch(/РµР|СЃС|РќР|РѕС|С‚С/);
+  });
+
   it("keeps full phone for admin-facing active messages", () => {
     const text = formatActiveRegistrationMessage(
       {
