@@ -11,7 +11,8 @@ import { z } from "zod";
 import type { AppContext } from "../app/context";
 import { ADMIN_MENU_LABELS, EMPLOYEE_MENU_LABELS, TELEGRAM_CALLBACKS } from "../domain/constants";
 import { getDayBounds, getTodayBounds, getYesterdayBounds, parseDateInput } from "../lib/date";
-import { AppError, ConflictAppError, NotFoundAppError, ValidationAppError } from "../lib/errors";
+import { env } from "../lib/env";
+import { AppError, ConflictAppError, ForbiddenAppError, NotFoundAppError, ValidationAppError } from "../lib/errors";
 import { normalizeUzPhone } from "../lib/phone";
 import {
   buildAdminExportKeyboard,
@@ -116,12 +117,23 @@ function isBroadcastState(state: SessionState): boolean {
   return state.startsWith("ADMIN_BROADCAST_");
 }
 
+function getDatabaseHost(): string {
+  try {
+    return new URL(env.DATABASE_URL).host;
+  } catch {
+    const match = env.DATABASE_URL.match(/@([^:/?#]+)/);
+    return match?.[1] ?? "unparsed";
+  }
+}
+
 export class TelegramBotTransport {
   public constructor(private readonly appContext: AppContext) {}
 
   public async handleUpdate(update: TelegramUpdate): Promise<void> {
     const userId = update.message?.from?.id ?? update.callback_query?.from.id;
     const chatId = update.message?.chat.id ?? update.callback_query?.message?.chat.id;
+    const text = update.message?.text?.trim();
+    const shouldLogAuthorization = text === "/start" || text === "/menu" || text === "Меню";
 
     if (!userId || !chatId) {
       return;
@@ -132,8 +144,60 @@ export class TelegramBotTransport {
 
     try {
       employee = await this.appContext.authService.authorizeTelegramUser(telegramId);
-    } catch {
-      await this.safeSendMessage(chatId, formatAccessDeniedMessage());
+
+      if (shouldLogAuthorization) {
+        this.appContext.logger.info("Telegram authorization result", {
+          fromId: String(userId),
+          chatId: String(chatId),
+          employeeFound: true,
+          employeeId: employee.id,
+          employeeRole: employee.role,
+          employeeIsActive: employee.isActive,
+          databaseHost: getDatabaseHost(),
+          authorizationStatus: "AUTHORIZED",
+        });
+      }
+    } catch (error: unknown) {
+      const denialReason =
+        error instanceof AppError && typeof error.details?.reason === "string"
+          ? error.details.reason
+          : "UNKNOWN";
+      const employeeFound =
+        error instanceof AppError && typeof error.details?.employeeFound === "boolean"
+          ? error.details.employeeFound
+          : null;
+      const databaseHost =
+        error instanceof AppError && typeof error.details?.databaseHost === "string"
+          ? error.details.databaseHost
+          : getDatabaseHost();
+
+      if (shouldLogAuthorization) {
+        const logPayload = {
+          fromId: String(userId),
+          chatId: String(chatId),
+          employeeFound,
+          denialReason,
+          databaseHost,
+          authorizationStatus: error instanceof ForbiddenAppError ? "DENIED" : "FAILED",
+          errorCode: error instanceof AppError ? error.code : "UNKNOWN",
+        };
+
+        if (error instanceof ForbiddenAppError) {
+          this.appContext.logger.warn("Telegram authorization result", logPayload);
+        } else {
+          this.appContext.logger.error("Telegram authorization result", {
+            ...logPayload,
+            error,
+          });
+        }
+      }
+
+      await this.safeSendMessage(
+        chatId,
+        error instanceof ForbiddenAppError
+          ? formatAccessDeniedMessage()
+          : "Не удалось проверить доступ. Попробуйте еще раз через минуту.",
+      );
 
       if (update.callback_query) {
         await this.safeAnswerCallback(update.callback_query.id, "Доступ запрещён.");

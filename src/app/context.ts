@@ -59,7 +59,7 @@ export function createAppContext(requestId: string): AppContext {
   return {
     logger,
     telegramClient,
-    authService: new AuthService(employeeRepository),
+    authService: new AuthService(employeeRepository, logger.child({ service: "auth" })),
     sessionService: new SessionService(sessionRepository),
     employeeService: new EmployeeService(employeeRepository, auditService),
     broadcastService: new BroadcastService(
