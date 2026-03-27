@@ -1,0 +1,257 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum EmployeeRole {
+  EMPLOYEE
+  ADMIN
+  SUPERVISOR
+}
+
+enum RegistrationSource {
+  TELEGRAM
+  SITE
+  OFFLINE
+}
+
+enum RegistrationStatus {
+  IN_PROGRESS
+  SUCCESS
+  ERROR
+  CANCELLED
+}
+
+enum RegistrationErrorReason {
+  ALREADY_REGISTERED_IN_OTHER_PARK
+  DUPLICATE
+  INVALID_DOCUMENTS
+  CLIENT_CHANGED_MIND
+  OTHER
+}
+
+enum AntifraudReason {
+  REGISTRATION_TOO_FAST
+}
+
+enum CancelReason {
+  EMPLOYEE_CANCELLED
+  ADMIN_RELEASE
+}
+
+enum BroadcastTargetType {
+  ALL_ACTIVE_USERS
+  ACTIVE_EMPLOYEES
+  ACTIVE_ADMINS
+}
+
+enum BroadcastContentType {
+  TEXT
+  PHOTO
+  VIDEO
+  DOCUMENT
+}
+
+enum BroadcastStatus {
+  DRAFT
+  SENDING
+  COMPLETED
+  PARTIAL_FAILED
+  CANCELLED
+  FAILED
+}
+
+enum BroadcastDeliveryStatus {
+  PENDING
+  SENT
+  FAILED
+  SKIPPED
+}
+
+enum SessionState {
+  IDLE
+  CREATING_REGISTRATION_SELECT_SOURCE
+  CREATING_REGISTRATION_ENTER_PHONE
+  CREATING_REGISTRATION_CONFIRM_START
+  ACTIVE_REGISTRATION_ACTIONS
+  EMPLOYEE_SEARCH_ACTIVE_PHONE
+  MARK_ERROR_SELECT_REASON
+  MARK_ERROR_ENTER_COMMENT
+  ADMIN_SEARCH_PHONE
+  ADMIN_EXPORT_SELECT_PERIOD
+  ADMIN_REPORT_SELECT_FILTERS
+  ADMIN_RELEASE_ENTER_REASON
+  ADMIN_BROADCAST_MENU
+  ADMIN_BROADCAST_CHOOSE_TYPE
+  ADMIN_BROADCAST_WAIT_TEXT
+  ADMIN_BROADCAST_WAIT_PHOTO
+  ADMIN_BROADCAST_WAIT_VIDEO
+  ADMIN_BROADCAST_WAIT_DOCUMENT
+  ADMIN_BROADCAST_WAIT_CAPTION
+  ADMIN_BROADCAST_PREVIEW
+  ADMIN_BROADCAST_CONFIRM_SEND
+  ADMIN_BROADCAST_HISTORY
+  ADMIN_BROADCAST_VIEW_DETAILS
+}
+
+enum AuditEntityType {
+  EMPLOYEE
+  REGISTRATION
+  SESSION
+  REPORT
+  BROADCAST
+  SYSTEM
+}
+
+model Employee {
+  id                     String         @id @default(cuid())
+  telegramId             BigInt?        @unique @map("telegram_id")
+  employeeCode           String         @unique @map("employee_code")
+  fullName               String         @map("full_name")
+  role                   EmployeeRole   @default(EMPLOYEE)
+  isActive               Boolean        @default(true) @map("is_active")
+  createdAt              DateTime       @default(now()) @map("created_at")
+  updatedAt              DateTime       @updatedAt @map("updated_at")
+  startedRegistrations   Registration[] @relation("started_by")
+  finishedRegistrations  Registration[] @relation("finished_by")
+  errorRegistrations     Registration[] @relation("error_by")
+  cancelledRegistrations Registration[] @relation("cancelled_by")
+  createdBroadcasts      Broadcast[]     @relation("broadcast_created_by")
+  broadcastDeliveries    BroadcastDelivery[]
+  auditLogs              AuditLog[]
+  sessions               UserSession[]
+
+  @@map("employees")
+}
+
+model Registration {
+  id                    String                   @id @default(cuid())
+  phoneE164             String                   @map("phone_e164")
+  source                RegistrationSource
+  status                RegistrationStatus       @default(IN_PROGRESS)
+  startedByEmployeeId   String                   @map("started_by_employee_id")
+  finishedByEmployeeId  String?                  @map("finished_by_employee_id")
+  errorByEmployeeId     String?                  @map("error_by_employee_id")
+  cancelledByEmployeeId String?                  @map("cancelled_by_employee_id")
+  startedAt             DateTime                 @default(now()) @map("started_at")
+  finishedAt            DateTime?                @map("finished_at")
+  errorAt               DateTime?                @map("error_at")
+  cancelledAt           DateTime?                @map("cancelled_at")
+  durationSeconds       Int?                     @map("duration_seconds")
+  antifraudFlag         Boolean                  @default(false) @map("antifraud_flag")
+  antifraudReason       AntifraudReason?         @map("antifraud_reason")
+  errorReason           RegistrationErrorReason? @map("error_reason")
+  errorComment          String?                  @map("error_comment") @db.Text
+  cancelReason          CancelReason?            @map("cancel_reason")
+  cancelComment         String?                  @map("cancel_comment") @db.Text
+  lastReminderAt        DateTime?                @map("last_reminder_at")
+  reminderCount         Int                      @default(0) @map("reminder_count")
+  createdAt             DateTime                 @default(now()) @map("created_at")
+  updatedAt             DateTime                 @updatedAt @map("updated_at")
+  startedBy             Employee                 @relation("started_by", fields: [startedByEmployeeId], references: [id])
+  finishedBy            Employee?                @relation("finished_by", fields: [finishedByEmployeeId], references: [id])
+  errorBy               Employee?                @relation("error_by", fields: [errorByEmployeeId], references: [id])
+  cancelledBy           Employee?                @relation("cancelled_by", fields: [cancelledByEmployeeId], references: [id])
+
+  @@index([phoneE164], map: "registrations_phone_e164_idx")
+  @@index([status, startedAt], map: "registrations_status_started_at_idx")
+  @@index([startedByEmployeeId, status], map: "registrations_started_by_status_idx")
+  @@index([antifraudFlag, startedAt], map: "registrations_antifraud_started_at_idx")
+  @@index([lastReminderAt, status], map: "registrations_last_reminder_status_idx")
+  @@map("registrations")
+}
+
+model AuditLog {
+  id         String          @id @default(cuid())
+  employeeId String?         @map("employee_id")
+  action     String
+  entityType AuditEntityType @map("entity_type")
+  entityId   String?         @map("entity_id")
+  payloadJson Json           @map("payload_json")
+  createdAt  DateTime        @default(now()) @map("created_at")
+  employee   Employee?       @relation(fields: [employeeId], references: [id])
+
+  @@index([employeeId, createdAt], map: "audit_logs_employee_created_at_idx")
+  @@index([entityType, entityId], map: "audit_logs_entity_lookup_idx")
+  @@map("audit_logs")
+}
+
+model Broadcast {
+  id                  String               @id @default(cuid())
+  createdByEmployeeId String               @map("created_by_employee_id")
+  targetType          BroadcastTargetType  @map("target_type")
+  contentType         BroadcastContentType @map("content_type")
+  text                String?              @db.Text
+  caption             String?              @db.Text
+  telegramFileId      String?              @map("telegram_file_id")
+  telegramFileUniqueId String?             @map("telegram_file_unique_id")
+  fileName            String?              @map("file_name")
+  mimeType            String?              @map("mime_type")
+  fileSize            Int?                 @map("file_size")
+  status              BroadcastStatus      @default(DRAFT)
+  recipientsCount     Int                  @default(0) @map("recipients_count")
+  sentCount           Int                  @default(0) @map("sent_count")
+  failedCount         Int                  @default(0) @map("failed_count")
+  startedAt           DateTime?            @map("started_at")
+  completedAt         DateTime?            @map("completed_at")
+  cancelledAt         DateTime?            @map("cancelled_at")
+  errorSummary        String?              @map("error_summary") @db.Text
+  createdAt           DateTime             @default(now()) @map("created_at")
+  updatedAt           DateTime             @updatedAt @map("updated_at")
+  createdBy           Employee             @relation("broadcast_created_by", fields: [createdByEmployeeId], references: [id])
+  deliveries          BroadcastDelivery[]
+
+  @@index([createdByEmployeeId, createdAt], map: "broadcasts_created_by_created_at_idx")
+  @@index([status, createdAt], map: "broadcasts_status_created_at_idx")
+  @@map("broadcasts")
+}
+
+model BroadcastDelivery {
+  id                 String                  @id @default(cuid())
+  broadcastId        String                  @map("broadcast_id")
+  recipientEmployeeId String?                @map("recipient_employee_id")
+  telegramId         BigInt                  @map("telegram_id")
+  status             BroadcastDeliveryStatus @default(PENDING)
+  telegramMessageId  Int?                    @map("telegram_message_id")
+  errorCode          String?                 @map("error_code")
+  errorMessage       String?                 @map("error_message") @db.Text
+  sentAt             DateTime?               @map("sent_at")
+  createdAt          DateTime                @default(now()) @map("created_at")
+  updatedAt          DateTime                @updatedAt @map("updated_at")
+  broadcast          Broadcast               @relation(fields: [broadcastId], references: [id])
+  recipientEmployee  Employee?               @relation(fields: [recipientEmployeeId], references: [id])
+
+  @@index([broadcastId], map: "broadcast_deliveries_broadcast_id_idx")
+  @@index([status], map: "broadcast_deliveries_status_idx")
+  @@index([telegramId], map: "broadcast_deliveries_telegram_id_idx")
+  @@index([broadcastId, status], map: "broadcast_deliveries_broadcast_status_idx")
+  @@map("broadcast_deliveries")
+}
+
+model DailyReportSnapshot {
+  id         String   @id @default(cuid())
+  reportDate DateTime @unique @db.Date @map("report_date")
+  payloadJson Json    @map("payload_json")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("daily_report_snapshots")
+}
+
+model UserSession {
+  id         String       @id @default(cuid())
+  telegramId BigInt       @unique @map("telegram_id")
+  employeeId String?      @map("employee_id")
+  state      SessionState @default(IDLE)
+  dataJson   Json?        @map("data_json")
+  createdAt  DateTime     @default(now()) @map("created_at")
+  updatedAt  DateTime     @updatedAt @map("updated_at")
+  employee   Employee?    @relation(fields: [employeeId], references: [id])
+
+  @@index([employeeId], map: "user_sessions_employee_id_idx")
+  @@map("user_sessions")
+}
