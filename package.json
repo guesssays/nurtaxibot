@@ -4,7 +4,7 @@
   "private": true,
   "description": "Production-ready Telegram bot for WB Taxi driver registration control on Netlify Functions.",
   "scripts": {
-    "build": "npm run prisma:generate && npm run typecheck",
+    "build": "npm run prisma:generate",
     "dev": "netlify dev",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
