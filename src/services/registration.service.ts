@@ -11,6 +11,7 @@ import { getTodayBounds } from "../lib/date";
 import { ConflictAppError, ForbiddenAppError, NotFoundAppError, ValidationAppError } from "../lib/errors";
 import { calculateDurationSeconds } from "../lib/duration";
 import { env } from "../lib/env";
+import type { Logger } from "../lib/logger";
 import { normalizeUzPhone } from "../lib/phone";
 import { isPrismaKnownRequestError } from "../lib/prisma-errors";
 import { getPrismaClient } from "../lib/prisma";
@@ -24,14 +25,14 @@ import { AuditService } from "./audit.service";
 
 function toBlockingConflict(registration: RegistrationWithEmployeesRecord): ConflictAppError {
   if (registration.status === "SUCCESS") {
-    return new ConflictAppError("Номер уже зарегистрирован.", {
+    return new ConflictAppError("РќРѕРјРµСЂ СѓР¶Рµ Р·Р°СЂРµРіРёСЃС‚СЂРёСЂРѕРІР°РЅ.", {
       code: "PHONE_ALREADY_SUCCESS",
       registrationId: registration.id,
       phoneE164: registration.phoneE164,
     });
   }
 
-  return new ConflictAppError("Номер уже находится в обработке.", {
+  return new ConflictAppError("РќРѕРјРµСЂ СѓР¶Рµ РЅР°С…РѕРґРёС‚СЃСЏ РІ РѕР±СЂР°Р±РѕС‚РєРµ.", {
     code: "PHONE_ALREADY_IN_PROGRESS",
     registrationId: registration.id,
     phoneE164: registration.phoneE164,
@@ -43,6 +44,7 @@ export class RegistrationService {
   public constructor(
     private readonly registrationRepository: RegistrationRepository,
     private readonly auditService: AuditService,
+    private readonly logger?: Logger,
   ) {}
 
   public async getEmployeeActiveRegistration(employeeId: string) {
@@ -55,39 +57,44 @@ export class RegistrationService {
     source: RegistrationSource,
   ): Promise<RegistrationWithEmployeesRecord> {
     if (actor.role !== EmployeeRole.EMPLOYEE) {
-      throw new ForbiddenAppError("Запуск регистрации через это действие доступен только сотруднику.");
+      throw new ForbiddenAppError("Р—Р°РїСѓСЃРє СЂРµРіРёСЃС‚СЂР°С†РёРё С‡РµСЂРµР· СЌС‚Рѕ РґРµР№СЃС‚РІРёРµ РґРѕСЃС‚СѓРїРµРЅ С‚РѕР»СЊРєРѕ СЃРѕС‚СЂСѓРґРЅРёРєСѓ.");
     }
 
     const phoneE164 = normalizeUzPhone(phoneInput);
     const now = new Date();
+    const logMeta = {
+      employeeId: actor.id,
+      employeeRole: actor.role,
+      source,
+      normalizedPhone: phoneE164,
+    };
+
+    this.logger?.info("Registration start requested", logMeta);
 
     try {
-      return await this.registrationRepository.withPhoneAndEmployeeLocks(phoneE164, actor.id, async (tx) => {
-        const activeByEmployee = await this.registrationRepository.findActiveByEmployeeId(actor.id, tx);
+      const activeByEmployee = await this.registrationRepository.findActiveByEmployeeId(actor.id);
 
-        if (activeByEmployee) {
-          throw new ConflictAppError("Сначала завершите текущую активную регистрацию.", {
-            code: "EMPLOYEE_ALREADY_HAS_ACTIVE_REGISTRATION",
-            registrationId: activeByEmployee.id,
-          });
-        }
+      if (activeByEmployee) {
+        throw new ConflictAppError("РЎРЅР°С‡Р°Р»Р° Р·Р°РІРµСЂС€РёС‚Рµ С‚РµРєСѓС‰СѓСЋ Р°РєС‚РёРІРЅСѓСЋ СЂРµРіРёСЃС‚СЂР°С†РёСЋ.", {
+          code: "EMPLOYEE_ALREADY_HAS_ACTIVE_REGISTRATION",
+          registrationId: activeByEmployee.id,
+        });
+      }
 
-        const blocking = await this.registrationRepository.findBlockingByPhone(phoneE164, tx);
+      const blocking = await this.registrationRepository.findBlockingByPhone(phoneE164);
 
-        if (blocking) {
-          throw toBlockingConflict(blocking);
-        }
+      if (blocking) {
+        throw toBlockingConflict(blocking);
+      }
 
-        const registration = await this.registrationRepository.createInProgress(
-          {
-            phoneE164,
-            source,
-            startedByEmployeeId: actor.id,
-            startedAt: now,
-          },
-          tx,
-        );
+      const registration = await this.registrationRepository.createInProgress({
+        phoneE164,
+        source,
+        startedByEmployeeId: actor.id,
+        startedAt: now,
+      });
 
+      try {
         await this.auditService.log(
           "REGISTRATION_STARTED",
           "REGISTRATION",
@@ -97,31 +104,64 @@ export class RegistrationService {
           },
           actor.id,
           registration.id,
-          tx,
         );
+      } catch (auditError: unknown) {
+        this.logger?.error("Registration start audit log failed", {
+          ...logMeta,
+          registrationId: registration.id,
+          error: auditError,
+        });
+      }
 
-        return registration;
+      this.logger?.info("Registration created successfully", {
+        ...logMeta,
+        registrationId: registration.id,
+        registrationStatus: registration.status,
       });
+
+      return registration;
     } catch (error: unknown) {
       if (error instanceof ConflictAppError) {
+        this.logger?.warn("Registration creation blocked by business rule", {
+          ...logMeta,
+          errorCode: error.code,
+          error,
+        });
         throw error;
       }
 
       if (isPrismaKnownRequestError(error, "P2002")) {
         const blocking = await this.registrationRepository.findBlockingByPhone(phoneE164);
         if (blocking) {
-          throw toBlockingConflict(blocking);
+          const conflict = toBlockingConflict(blocking);
+          this.logger?.warn("Registration creation hit unique constraint", {
+            ...logMeta,
+            errorCode: conflict.code,
+            error,
+          });
+          throw conflict;
         }
 
         const activeByEmployee = await this.registrationRepository.findActiveByEmployeeId(actor.id);
         if (activeByEmployee) {
-          throw new ConflictAppError("У сотрудника уже есть активная регистрация.", {
+          const conflict = new ConflictAppError("РЈ СЃРѕС‚СЂСѓРґРЅРёРєР° СѓР¶Рµ РµСЃС‚СЊ Р°РєС‚РёРІРЅР°СЏ СЂРµРіРёСЃС‚СЂР°С†РёСЏ.", {
             code: "EMPLOYEE_ALREADY_HAS_ACTIVE_REGISTRATION",
             registrationId: activeByEmployee.id,
           });
+          this.logger?.warn("Registration creation hit unique constraint", {
+            ...logMeta,
+            errorCode: conflict.code,
+            error,
+          });
+          throw conflict;
         }
       }
 
+      this.logger?.error("Registration creation failed unexpectedly", {
+        ...logMeta,
+        errorCode: isPrismaKnownRequestError(error) ? error.code : "UNEXPECTED_ERROR",
+        error,
+      });
       throw error;
     }
   }
@@ -131,7 +171,7 @@ export class RegistrationService {
     antifraudTriggered: boolean;
   }> {
     if (actor.role !== EmployeeRole.EMPLOYEE) {
-      throw new ForbiddenAppError("Завершение регистрации через это действие доступно только сотруднику.");
+      throw new ForbiddenAppError("Р—Р°РІРµСЂС€РµРЅРёРµ СЂРµРіРёСЃС‚СЂР°С†РёРё С‡РµСЂРµР· СЌС‚Рѕ РґРµР№СЃС‚РІРёРµ РґРѕСЃС‚СѓРїРЅРѕ С‚РѕР»СЊРєРѕ СЃРѕС‚СЂСѓРґРЅРёРєСѓ.");
     }
 
     return this.finishActiveRegistration(actor, actor.id);
@@ -143,11 +183,11 @@ export class RegistrationService {
     comment?: string,
   ): Promise<RegistrationWithEmployeesRecord> {
     if (actor.role !== EmployeeRole.EMPLOYEE) {
-      throw new ForbiddenAppError("Пометка ошибки доступна только сотруднику.");
+      throw new ForbiddenAppError("РџРѕРјРµС‚РєР° РѕС€РёР±РєРё РґРѕСЃС‚СѓРїРЅР° С‚РѕР»СЊРєРѕ СЃРѕС‚СЂСѓРґРЅРёРєСѓ.");
     }
 
     if (reason === RegistrationErrorReason.OTHER && (!comment || comment.trim().length === 0)) {
-      throw new ValidationAppError("Для причины OTHER комментарий обязателен.");
+      throw new ValidationAppError("Р”Р»СЏ РїСЂРёС‡РёРЅС‹ OTHER РєРѕРјРјРµРЅС‚Р°СЂРёР№ РѕР±СЏР·Р°С‚РµР»РµРЅ.");
     }
 
     const prisma = getPrismaClient();
@@ -156,7 +196,7 @@ export class RegistrationService {
       const active = await this.registrationRepository.findActiveByEmployeeId(actor.id, tx);
 
       if (!active) {
-        throw new NotFoundAppError("У вас нет активной регистрации.");
+        throw new NotFoundAppError("РЈ РІР°СЃ РЅРµС‚ Р°РєС‚РёРІРЅРѕР№ СЂРµРіРёСЃС‚СЂР°С†РёРё.");
       }
 
       const errorAt = new Date();
@@ -174,7 +214,7 @@ export class RegistrationService {
       );
 
       if (!updated) {
-        throw new ConflictAppError("Не удалось пометить регистрацию ошибкой. Попробуйте еще раз.");
+        throw new ConflictAppError("РќРµ СѓРґР°Р»РѕСЃСЊ РїРѕРјРµС‚РёС‚СЊ СЂРµРіРёСЃС‚СЂР°С†РёСЋ РѕС€РёР±РєРѕР№. РџРѕРїСЂРѕР±СѓР№С‚Рµ РµС‰Рµ СЂР°Р·.");
       }
 
       await this.auditService.log(
@@ -196,7 +236,7 @@ export class RegistrationService {
 
   public async cancelOwnActiveRegistration(actor: Employee): Promise<RegistrationWithEmployeesRecord> {
     if (actor.role !== EmployeeRole.EMPLOYEE) {
-      throw new ForbiddenAppError("Отмена регистрации доступна только сотруднику.");
+      throw new ForbiddenAppError("РћС‚РјРµРЅР° СЂРµРіРёСЃС‚СЂР°С†РёРё РґРѕСЃС‚СѓРїРЅР° С‚РѕР»СЊРєРѕ СЃРѕС‚СЂСѓРґРЅРёРєСѓ.");
     }
 
     return this.cancelRegistration(actor, actor.id, CancelReason.EMPLOYEE_CANCELLED);
@@ -215,7 +255,7 @@ export class RegistrationService {
       const registration = await this.registrationRepository.findById(registrationId, tx);
 
       if (!registration || registration.status !== "IN_PROGRESS") {
-        throw new NotFoundAppError("Активная регистрация не найдена.");
+        throw new NotFoundAppError("РђРєС‚РёРІРЅР°СЏ СЂРµРіРёСЃС‚СЂР°С†РёСЏ РЅРµ РЅР°Р№РґРµРЅР°.");
       }
 
       const updated = await this.registrationRepository.transitionToCancelled(
@@ -230,7 +270,7 @@ export class RegistrationService {
       );
 
       if (!updated) {
-        throw new ConflictAppError("Не удалось снять активную регистрацию.");
+        throw new ConflictAppError("РќРµ СѓРґР°Р»РѕСЃСЊ СЃРЅСЏС‚СЊ Р°РєС‚РёРІРЅСѓСЋ СЂРµРіРёСЃС‚СЂР°С†РёСЋ.");
       }
 
       await this.auditService.log(
@@ -256,18 +296,18 @@ export class RegistrationService {
 
   public async searchWithinOwnActiveRegistration(actor: Employee, phoneInput: string) {
     if (actor.role !== EmployeeRole.EMPLOYEE) {
-      throw new ForbiddenAppError("Поиск в активной регистрации доступен только сотруднику.");
+      throw new ForbiddenAppError("РџРѕРёСЃРє РІ Р°РєС‚РёРІРЅРѕР№ СЂРµРіРёСЃС‚СЂР°С†РёРё РґРѕСЃС‚СѓРїРµРЅ С‚РѕР»СЊРєРѕ СЃРѕС‚СЂСѓРґРЅРёРєСѓ.");
     }
 
     const phoneE164 = normalizeUzPhone(phoneInput);
     const active = await this.registrationRepository.findActiveByEmployeeId(actor.id);
 
     if (!active) {
-      throw new NotFoundAppError("У вас нет активной регистрации.");
+      throw new NotFoundAppError("РЈ РІР°СЃ РЅРµС‚ Р°РєС‚РёРІРЅРѕР№ СЂРµРіРёСЃС‚СЂР°С†РёРё.");
     }
 
     if (active.phoneE164 !== phoneE164) {
-      throw new ForbiddenAppError("Доступен только номер вашей текущей активной регистрации.");
+      throw new ForbiddenAppError("Р”РѕСЃС‚СѓРїРµРЅ С‚РѕР»СЊРєРѕ РЅРѕРјРµСЂ РІР°С€РµР№ С‚РµРєСѓС‰РµР№ Р°РєС‚РёРІРЅРѕР№ СЂРµРіРёСЃС‚СЂР°С†РёРё.");
     }
 
     return [active];
@@ -330,7 +370,7 @@ export class RegistrationService {
       const active = await this.registrationRepository.findActiveByEmployeeId(activeEmployeeId, tx);
 
       if (!active) {
-        throw new NotFoundAppError("У вас нет активной регистрации.");
+        throw new NotFoundAppError("РЈ РІР°СЃ РЅРµС‚ Р°РєС‚РёРІРЅРѕР№ СЂРµРіРёСЃС‚СЂР°С†РёРё.");
       }
 
       const finishedAt = new Date();
@@ -353,7 +393,7 @@ export class RegistrationService {
       );
 
       if (!updated) {
-        throw new ConflictAppError("Не удалось завершить регистрацию. Попробуйте еще раз.");
+        throw new ConflictAppError("РќРµ СѓРґР°Р»РѕСЃСЊ Р·Р°РІРµСЂС€РёС‚СЊ СЂРµРіРёСЃС‚СЂР°С†РёСЋ. РџРѕРїСЂРѕР±СѓР№С‚Рµ РµС‰Рµ СЂР°Р·.");
       }
 
       await this.auditService.log(
@@ -388,7 +428,7 @@ export class RegistrationService {
       const active = await this.registrationRepository.findActiveByEmployeeId(activeEmployeeId, tx);
 
       if (!active) {
-        throw new NotFoundAppError("Активная регистрация не найдена.");
+        throw new NotFoundAppError("РђРєС‚РёРІРЅР°СЏ СЂРµРіРёСЃС‚СЂР°С†РёСЏ РЅРµ РЅР°Р№РґРµРЅР°.");
       }
 
       const updated = await this.registrationRepository.transitionToCancelled(
@@ -403,7 +443,7 @@ export class RegistrationService {
       );
 
       if (!updated) {
-        throw new ConflictAppError("Не удалось отменить регистрацию. Попробуйте еще раз.");
+        throw new ConflictAppError("РќРµ СѓРґР°Р»РѕСЃСЊ РѕС‚РјРµРЅРёС‚СЊ СЂРµРіРёСЃС‚СЂР°С†РёСЋ. РџРѕРїСЂРѕР±СѓР№С‚Рµ РµС‰Рµ СЂР°Р·.");
       }
 
       await this.auditService.log(

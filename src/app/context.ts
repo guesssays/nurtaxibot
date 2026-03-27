@@ -84,7 +84,11 @@ export function createAppContext(requestId: string): AppContext {
       telegramClient,
       logger.child({ service: "broadcasts" }),
     ),
-    registrationService: new RegistrationService(registrationRepository, auditService),
+    registrationService: new RegistrationService(
+      registrationRepository,
+      auditService,
+      logger.child({ service: "registrations" }),
+    ),
     reportService: new ReportService(registrationRepository, dailyReportSnapshotRepository),
     exportService: new ExportService(registrationRepository, employeeRepository),
     notificationService,

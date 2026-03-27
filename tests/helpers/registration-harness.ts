@@ -7,6 +7,7 @@ import {
   type Employee,
 } from "@prisma/client";
 
+import { ConflictAppError } from "../../src/lib/errors";
 import type { RegistrationWithEmployeesRecord } from "../../src/repositories/registration.repository";
 
 type LockRelease = () => void;
@@ -106,6 +107,29 @@ export class InMemoryRegistrationRepository {
     startedByEmployeeId: string;
     startedAt: Date;
   }): Promise<RegistrationWithEmployeesRecord> {
+    const blocking = this.registrations.find(
+      (item) =>
+        item.phoneE164 === input.phoneE164 &&
+        (item.status === RegistrationStatus.IN_PROGRESS || item.status === RegistrationStatus.SUCCESS),
+    );
+    if (blocking) {
+      throw new ConflictAppError("Phone already has a blocking registration.", {
+        code: blocking.status === RegistrationStatus.SUCCESS ? "PHONE_ALREADY_SUCCESS" : "PHONE_ALREADY_IN_PROGRESS",
+        registrationId: blocking.id,
+        phoneE164: blocking.phoneE164,
+      });
+    }
+
+    const activeByEmployee = this.registrations.find(
+      (item) => item.startedByEmployeeId === input.startedByEmployeeId && item.status === RegistrationStatus.IN_PROGRESS,
+    );
+    if (activeByEmployee) {
+      throw new ConflictAppError("Employee already has an active registration.", {
+        code: "EMPLOYEE_ALREADY_HAS_ACTIVE_REGISTRATION",
+        registrationId: activeByEmployee.id,
+      });
+    }
+
     const startedBy = this.employees.get(input.startedByEmployeeId);
 
     if (!startedBy) {

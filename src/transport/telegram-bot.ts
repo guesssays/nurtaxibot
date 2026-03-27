@@ -13,7 +13,7 @@ import { ADMIN_MENU_LABELS, EMPLOYEE_MENU_LABELS, GUEST_MENU_LABELS, TELEGRAM_CA
 import { getDayBounds, getTodayBounds, getYesterdayBounds, parseDateInput } from "../lib/date";
 import { env } from "../lib/env";
 import { AppError, ConflictAppError, NotFoundAppError, ValidationAppError } from "../lib/errors";
-import { normalizeUzPhone } from "../lib/phone";
+import { maskPhoneForEmployee, normalizeUzPhone } from "../lib/phone";
 import {
   buildAdminExportKeyboard,
   buildAdminReportKeyboard,
@@ -197,6 +197,30 @@ function getDatabaseHost(): string {
   }
 }
 
+function getUpdateType(update: TelegramUpdate): "message" | "callback_query" | "unknown" {
+  if (update.callback_query) {
+    return "callback_query";
+  }
+
+  if (update.message) {
+    return "message";
+  }
+
+  return "unknown";
+}
+
+function maskPhoneForLogs(phone: string | null | undefined): string | null {
+  if (!phone) {
+    return null;
+  }
+
+  try {
+    return maskPhoneForEmployee(phone);
+  } catch {
+    return null;
+  }
+}
+
 export class TelegramBotTransport {
   public constructor(private readonly appContext: AppContext) {}
 
@@ -205,6 +229,7 @@ export class TelegramBotTransport {
     const chatId = update.message?.chat.id ?? update.callback_query?.message?.chat.id;
     const text = update.message?.text?.trim();
     const telegramUser = update.message?.from ?? update.callback_query?.from;
+    const callbackAction = update.callback_query?.data ? parseCallbackData(update.callback_query.data).action : null;
     const shouldLogAuthorization = text === "/start" || text === "/menu" || text === "\u041c\u0435\u043d\u044e";
 
     if (!userId || !chatId) {
@@ -212,6 +237,14 @@ export class TelegramBotTransport {
     }
 
     const telegramId = BigInt(userId);
+    this.appContext.logger.info("Telegram update received", {
+      fromId: String(userId),
+      chatId: String(chatId),
+      updateType: getUpdateType(update),
+      callbackAction,
+      hasText: Boolean(text),
+      command: text?.startsWith("/") ? text : null,
+    });
 
     try {
       const access = await this.appContext.authService.resolveTelegramAccess(telegramId);
@@ -239,17 +272,46 @@ export class TelegramBotTransport {
       }
 
       if (access.status === "AUTHORIZED" && access.employee) {
-        try {
-          if (update.callback_query?.data) {
+        if (update.callback_query?.data) {
+          try {
+            this.appContext.logger.info("Telegram update routed", {
+              fromId: String(userId),
+              chatId: String(chatId),
+              route: "callback_query",
+              callbackAction,
+              employeeId: access.employee.id,
+              employeeRole: access.employee.role,
+            });
             await this.handleCallbackQuery(access.employee, chatId, telegramId, update.callback_query.id, update.callback_query.data);
             return;
+          } catch (error: unknown) {
+            await this.handleTransportError(access.employee, chatId, update.callback_query.id, error, {
+              fromId: String(userId),
+              chatId: String(chatId),
+              route: "callback_query",
+              callbackAction,
+            });
+            return;
           }
+        }
 
-          if (update.message) {
+        if (update.message) {
+          try {
+            this.appContext.logger.info("Telegram update routed", {
+              fromId: String(userId),
+              chatId: String(chatId),
+              route: "message",
+              employeeId: access.employee.id,
+              employeeRole: access.employee.role,
+            });
             await this.handleMessage(access.employee, chatId, telegramId, update.message);
+          } catch (error: unknown) {
+            await this.handleTransportError(access.employee, chatId, undefined, error, {
+              fromId: String(userId),
+              chatId: String(chatId),
+              route: "message",
+            });
           }
-        } catch (error: unknown) {
-          await this.handleTransportError(access.employee, chatId, undefined, error);
         }
 
         return;
@@ -283,6 +345,14 @@ export class TelegramBotTransport {
           denialReason,
           databaseHost,
           authorizationStatus: "FAILED",
+          errorCode: error instanceof AppError ? error.code : "UNKNOWN",
+          error,
+        });
+      } else {
+        this.appContext.logger.error("Telegram update handling failed before routing", {
+          fromId: String(userId),
+          chatId: String(chatId),
+          callbackAction,
           errorCode: error instanceof AppError ? error.code : "UNKNOWN",
           error,
         });
@@ -351,6 +421,17 @@ export class TelegramBotTransport {
       ? await this.appContext.registrationService.getEmployeeActiveRegistration(employee.id)
       : null;
 
+    this.appContext.logger.info("Telegram message state resolved", {
+      fromId: String(telegramId),
+      chatId: String(chatId),
+      employeeId: employee.id,
+      employeeRole: employee.role,
+      sessionState: state,
+      hasText: Boolean(text),
+      hasActiveRegistration: Boolean(activeRegistration),
+      command: text?.startsWith("/") ? text : null,
+    });
+
     if (text === "/start" || text === "/menu" || text === "Меню") {
       await this.appContext.sessionService.reset(telegramId, employee.id);
       await this.showMainMenu(employee, chatId, activeRegistration);
@@ -386,6 +467,12 @@ export class TelegramBotTransport {
         return;
       }
 
+      this.appContext.logger.info("Employee started new registration flow", {
+        fromId: String(telegramId),
+        chatId: String(chatId),
+        employeeId: employee.id,
+        employeeRole: employee.role,
+      });
       await this.appContext.sessionService.setState(
         telegramId,
         employee.id,
@@ -472,6 +559,14 @@ export class TelegramBotTransport {
       }
 
       const phoneE164 = normalizeUzPhone(text);
+      this.appContext.logger.info("Registration phone normalized", {
+        fromId: String(telegramId),
+        chatId: String(chatId),
+        employeeId: employee.id,
+        sessionState: state,
+        source: startData.source,
+        normalizedPhone: maskPhoneForLogs(phoneE164),
+      });
       await this.appContext.sessionService.setState(
         telegramId,
         employee.id,
@@ -954,6 +1049,17 @@ export class TelegramBotTransport {
   ): Promise<void> {
     const { action, value } = parseCallbackData(data);
     const session = await this.appContext.sessionService.getSession(telegramId);
+    const sessionState = session?.state ?? "IDLE";
+
+    this.appContext.logger.info("Telegram callback processing started", {
+      fromId: String(telegramId),
+      chatId: String(chatId),
+      employeeId: employee.id,
+      employeeRole: employee.role,
+      callbackAction: action,
+      callbackValue: value ?? null,
+      sessionState,
+    });
 
     try {
       if (action === TELEGRAM_CALLBACKS.SELECT_SOURCE && value) {
@@ -963,6 +1069,13 @@ export class TelegramBotTransport {
           throw new AppError("Некорректный источник заявки.", "VALIDATION_ERROR", 400, true);
         }
 
+        this.appContext.logger.info("Registration source selected", {
+          fromId: String(telegramId),
+          chatId: String(chatId),
+          employeeId: employee.id,
+          callbackAction: action,
+          source,
+        });
         await this.appContext.sessionService.setState(telegramId, employee.id, "CREATING_REGISTRATION_ENTER_PHONE", {
           source,
         });
@@ -972,17 +1085,51 @@ export class TelegramBotTransport {
       }
 
       if (action === TELEGRAM_CALLBACKS.CONFIRM_START) {
+        this.appContext.logger.info("Registration confirm pressed", {
+          fromId: String(telegramId),
+          chatId: String(chatId),
+          employeeId: employee.id,
+          callbackAction: action,
+          sessionState,
+        });
+
+        if (sessionState !== "CREATING_REGISTRATION_CONFIRM_START") {
+          throw new AppError("РЎРµСЃСЃРёСЏ СЃС‚Р°СЂС‚Р° СЂРµРіРёСЃС‚СЂР°С†РёРё РёСЃС‚РµРєР»Р°.", "VALIDATION_ERROR", 400, true, {
+            expectedState: "CREATING_REGISTRATION_CONFIRM_START",
+            actualState: sessionState,
+          });
+        }
+
         const startData = parseSessionData(session?.dataJson, startSessionSchema);
 
         if (!startData?.phoneE164) {
           throw new AppError("Сессия старта регистрации истекла.", "VALIDATION_ERROR", 400, true);
         }
 
+        this.appContext.logger.info("Registration draft loaded for confirm", {
+          fromId: String(telegramId),
+          chatId: String(chatId),
+          employeeId: employee.id,
+          callbackAction: action,
+          sessionState,
+          source: startData.source,
+          normalizedPhone: maskPhoneForLogs(startData.phoneE164),
+        });
         const registration = await this.appContext.registrationService.startRegistration(
           employee,
           startData.phoneE164,
           startData.source,
         );
+        this.appContext.logger.info("Registration created in confirm flow", {
+          fromId: String(telegramId),
+          chatId: String(chatId),
+          employeeId: employee.id,
+          callbackAction: action,
+          registrationId: registration.id,
+          registrationStatus: registration.status,
+          source: registration.source,
+          normalizedPhone: maskPhoneForLogs(registration.phoneE164),
+        });
         await this.appContext.sessionService.setState(telegramId, employee.id, "ACTIVE_REGISTRATION_ACTIONS", null);
         await this.safeAnswerCallback(callbackId, "Регистрация запущена.");
         await this.safeSendMessage(
@@ -1200,7 +1347,14 @@ export class TelegramBotTransport {
         await this.openBroadcastMenu(employee, chatId, telegramId);
       }
     } catch (error: unknown) {
-      await this.handleTransportError(employee, chatId, callbackId, error);
+      await this.handleTransportError(employee, chatId, callbackId, error, {
+        fromId: String(telegramId),
+        chatId: String(chatId),
+        route: "callback_query",
+        callbackAction: action,
+        callbackValue: value ?? null,
+        sessionState,
+      });
     }
   }
 
@@ -2180,15 +2334,60 @@ export class TelegramBotTransport {
     chatId: number,
     callbackId: string | undefined,
     error: unknown,
+    meta: Record<string, unknown> = {},
   ): Promise<void> {
     const message = this.resolveUserMessage(employee, error);
-    const activeRegistration =
-      employee.role === EmployeeRole.EMPLOYEE
-        ? await this.appContext.registrationService.getEmployeeActiveRegistration(employee.id)
-        : null;
+    let activeRegistration = null;
+
+    if (error instanceof AppError) {
+      this.appContext.logger.warn("Telegram transport action failed", {
+        chatId: String(chatId),
+        callbackId: callbackId ?? null,
+        employeeId: employee.id,
+        employeeRole: employee.role,
+        errorCode: error.code,
+        error,
+        ...meta,
+      });
+    } else {
+      this.appContext.logger.error("Unexpected telegram transport error", {
+        chatId: String(chatId),
+        callbackId: callbackId ?? null,
+        employeeId: employee.id,
+        employeeRole: employee.role,
+        errorCode: "UNEXPECTED_ERROR",
+        error,
+        ...meta,
+      });
+    }
+
+    if (employee.role === EmployeeRole.EMPLOYEE) {
+      try {
+        activeRegistration = await this.appContext.registrationService.getEmployeeActiveRegistration(employee.id);
+      } catch (activeLookupError: unknown) {
+        this.appContext.logger.warn("Failed to resolve active registration during error handling", {
+          chatId: String(chatId),
+          employeeId: employee.id,
+          errorCode: activeLookupError instanceof AppError ? activeLookupError.code : "ACTIVE_LOOKUP_FAILED",
+          error: activeLookupError,
+          ...meta,
+        });
+      }
+    }
 
     if (callbackId) {
-      await this.safeAnswerCallback(callbackId, message);
+      try {
+        await this.safeAnswerCallback(callbackId, message);
+      } catch (callbackError: unknown) {
+        this.appContext.logger.warn("Callback response failed", {
+          chatId: String(chatId),
+          callbackId,
+          employeeId: employee.id,
+          errorCode: callbackError instanceof AppError ? callbackError.code : "CALLBACK_RESPONSE_FAILED",
+          error: callbackError,
+          ...meta,
+        });
+      }
     }
 
     if (error instanceof ValidationAppError && employee.role === EmployeeRole.ADMIN) {
