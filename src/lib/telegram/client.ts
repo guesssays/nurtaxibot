@@ -3,6 +3,7 @@ import type { Logger } from "../logger";
 
 import type {
   TelegramAnswerCallbackQueryPayload,
+  TelegramDeleteMessagePayload,
   TelegramEditMessageTextPayload,
   TelegramMessage,
   TelegramSendDocumentByFileIdPayload,
@@ -70,6 +71,10 @@ export class TelegramClient {
     payload: TelegramEditMessageTextPayload,
   ): Promise<TelegramMessage | true> {
     return this.apiCall<TelegramMessage | true>("editMessageText", payload);
+  }
+
+  public async deleteMessage(payload: TelegramDeleteMessagePayload): Promise<boolean> {
+    return this.apiCall<boolean>("deleteMessage", payload);
   }
 
   public async answerCallbackQuery(payload: TelegramAnswerCallbackQueryPayload): Promise<boolean> {

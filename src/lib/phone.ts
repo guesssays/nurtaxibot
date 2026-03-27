@@ -1,3 +1,5 @@
+import { EmployeeRole, RegistrationStatus } from "@prisma/client";
+
 import { ValidationAppError } from "./errors";
 
 const E164_PREFIX = "+998";
@@ -35,5 +37,38 @@ export function extractLocalUzPhone(input: string): string {
 
 export function maskPhoneForEmployee(phoneE164: string): string {
   const normalized = normalizeUzPhone(phoneE164);
-  return `${normalized.slice(0, 7)}***${normalized.slice(-3)}`;
+  return `***${normalized.slice(-4)}`;
+}
+
+export function canViewFullPhone(
+  role: EmployeeRole,
+  registrationStatus?: RegistrationStatus | null,
+  options?: {
+    allowEmployeeActive?: boolean;
+  },
+): boolean {
+  if (role === EmployeeRole.ADMIN) {
+    return true;
+  }
+
+  return role === EmployeeRole.EMPLOYEE
+    && options?.allowEmployeeActive === true
+    && registrationStatus === RegistrationStatus.IN_PROGRESS;
+}
+
+export function formatPhoneForRole(
+  phoneE164: string,
+  role: EmployeeRole,
+  options?: {
+    registrationStatus?: RegistrationStatus | null;
+    allowEmployeeActive?: boolean;
+  },
+): string {
+  const normalized = normalizeUzPhone(phoneE164);
+
+  if (canViewFullPhone(role, options?.registrationStatus, options)) {
+    return normalized;
+  }
+
+  return maskPhoneForEmployee(normalized);
 }

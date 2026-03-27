@@ -8,6 +8,8 @@ import {
 
 import type { AppContext } from "../../src/app/context";
 import type { Logger } from "../../src/lib/logger";
+import { normalizeUzPhone } from "../../src/lib/phone";
+import { MessagePrivacyService } from "../../src/services/message-privacy.service";
 import type {
   TelegramAnswerCallbackQueryPayload,
   TelegramMessage,
@@ -72,6 +74,7 @@ function createLoggerProxy(logs: LogEntry[], context: Record<string, unknown>): 
 
 export interface TransportHarnessOptions {
   startRegistrationError?: unknown;
+  deleteMessageError?: unknown;
 }
 
 export interface StartRegistrationCall {
@@ -84,6 +87,8 @@ export function createTransportHarness(options: TransportHarnessOptions = {}) {
   const messages: TelegramSendMessagePayload[] = [];
   const callbackAnswers: TelegramAnswerCallbackQueryPayload[] = [];
   const startRegistrationCalls: StartRegistrationCall[] = [];
+  const deletedMessages: Array<{ chatId: number | string; messageId: number }> = [];
+  const editedMessages: Array<{ chatId: number | string; messageId: number; text: string }> = [];
 
   const employee: Employee = {
     id: "emp-1",
@@ -105,39 +110,76 @@ export function createTransportHarness(options: TransportHarnessOptions = {}) {
   } | null = null;
 
   const logger = createLogger(logs);
+  const telegramClient = {
+    sendMessage: async (payload: TelegramSendMessagePayload) => {
+      messages.push(payload);
+      const message: TelegramMessage = {
+        message_id: messages.length,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: Number(payload.chat_id), type: "private" },
+        text: payload.text,
+      };
+      return message;
+    },
+    answerCallbackQuery: async (payload: TelegramAnswerCallbackQueryPayload) => {
+      callbackAnswers.push(payload);
+      return true;
+    },
+    sendPhoto: async () => {
+      throw new Error("Not implemented in test harness.");
+    },
+    sendVideo: async () => {
+      throw new Error("Not implemented in test harness.");
+    },
+    sendDocument: async () => {
+      throw new Error("Not implemented in test harness.");
+    },
+    sendDocumentByFileId: async () => {
+      throw new Error("Not implemented in test harness.");
+    },
+    editMessageText: async ({
+      chat_id,
+      message_id,
+      text,
+    }: {
+      chat_id: number | string;
+      message_id: number;
+      text: string;
+    }) => {
+      editedMessages.push({
+        chatId: chat_id,
+        messageId: message_id,
+        text,
+      });
+      return true;
+    },
+    deleteMessage: async ({
+      chat_id,
+      message_id,
+    }: {
+      chat_id: number | string;
+      message_id: number;
+    }) => {
+      if (options.deleteMessageError) {
+        throw options.deleteMessageError;
+      }
+
+      deletedMessages.push({
+        chatId: chat_id,
+        messageId: message_id,
+      });
+      return true;
+    },
+    setWebhook: async () => true,
+  };
+  const messagePrivacyService = new MessagePrivacyService(
+    telegramClient as never,
+    logger.child({ service: "message-privacy-test" }),
+  );
 
   const appContext: AppContext = {
     logger,
-    telegramClient: {
-      sendMessage: async (payload: TelegramSendMessagePayload) => {
-        messages.push(payload);
-        const message: TelegramMessage = {
-          message_id: messages.length,
-          date: Math.floor(Date.now() / 1000),
-          chat: { id: Number(payload.chat_id), type: "private" },
-          text: payload.text,
-        };
-        return message;
-      },
-      answerCallbackQuery: async (payload: TelegramAnswerCallbackQueryPayload) => {
-        callbackAnswers.push(payload);
-        return true;
-      },
-      sendPhoto: async () => {
-        throw new Error("Not implemented in test harness.");
-      },
-      sendVideo: async () => {
-        throw new Error("Not implemented in test harness.");
-      },
-      sendDocument: async () => {
-        throw new Error("Not implemented in test harness.");
-      },
-      sendDocumentByFileId: async () => {
-        throw new Error("Not implemented in test harness.");
-      },
-      editMessageText: async () => true,
-      setWebhook: async () => true,
-    } as never,
+    telegramClient: telegramClient as never,
     authService: {
       resolveTelegramAccess: async () => ({
         status: "AUTHORIZED" as const,
@@ -189,6 +231,68 @@ export function createTransportHarness(options: TransportHarnessOptions = {}) {
         activeRegistration = createRegistrationRecord(employee, phoneInput, source);
         return activeRegistration;
       },
+      finishOwnActiveRegistration: async () => {
+        if (!activeRegistration) {
+          throw new Error("No active registration.");
+        }
+
+        const finishedRegistration = {
+          ...activeRegistration,
+          status: RegistrationStatus.SUCCESS,
+          finishedAt: new Date(),
+          finishedBy: employee,
+          finishedByEmployeeId: employee.id,
+        };
+        activeRegistration = null;
+
+        return {
+          registration: finishedRegistration,
+          antifraudTriggered: false,
+        };
+      },
+      cancelOwnActiveRegistration: async () => {
+        if (!activeRegistration) {
+          throw new Error("No active registration.");
+        }
+
+        const cancelledRegistration = {
+          ...activeRegistration,
+          status: RegistrationStatus.CANCELLED,
+          cancelledAt: new Date(),
+          cancelledBy: employee,
+          cancelledByEmployeeId: employee.id,
+        };
+        activeRegistration = null;
+        return cancelledRegistration;
+      },
+      markOwnActiveRegistrationError: async (_actor: Employee, reason: string, comment?: string) => {
+        if (!activeRegistration) {
+          throw new Error("No active registration.");
+        }
+
+        const errorRegistration = {
+          ...activeRegistration,
+          status: RegistrationStatus.ERROR,
+          errorAt: new Date(),
+          errorBy: employee,
+          errorByEmployeeId: employee.id,
+          errorReason: reason,
+          errorComment: comment ?? null,
+        };
+        activeRegistration = null;
+        return errorRegistration;
+      },
+      searchWithinOwnActiveRegistration: async (_actor: Employee, phoneInput: string) => {
+        if (!activeRegistration) {
+          throw new Error("No active registration.");
+        }
+
+        if (activeRegistration.phoneE164 !== normalizeUzPhone(phoneInput)) {
+          throw new Error("Phone is outside active registration.");
+        }
+
+        return [activeRegistration];
+      },
       getEmployeeTodayStats: async () => ({
         started: 0,
         success: 0,
@@ -203,6 +307,7 @@ export function createTransportHarness(options: TransportHarnessOptions = {}) {
     notificationService: {
       notifyAntifraud: async () => undefined,
     } as never,
+    messagePrivacyService,
     reminderService: {} as never,
   };
 
@@ -212,6 +317,8 @@ export function createTransportHarness(options: TransportHarnessOptions = {}) {
     messages,
     callbackAnswers,
     startRegistrationCalls,
+    deletedMessages,
+    editedMessages,
     transport: new TelegramBotTransport(appContext),
     getSession: () => session,
   };

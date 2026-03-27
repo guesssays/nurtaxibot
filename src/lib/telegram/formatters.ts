@@ -1,4 +1,4 @@
-import type { Broadcast, BroadcastDelivery, Employee, Registration } from "@prisma/client";
+import { EmployeeRole, type Broadcast, type BroadcastDelivery, type Employee, type Registration } from "@prisma/client";
 
 import {
   ANTIFRAUD_REASON_LABELS,
@@ -11,7 +11,7 @@ import {
   STATUS_LABELS,
 } from "../../domain/constants";
 import { formatDateOnly, formatDateTime, formatDurationHuman } from "../date";
-import { maskPhoneForEmployee } from "../phone";
+import { formatPhoneForRole, maskPhoneForEmployee } from "../phone";
 
 interface EmployeeDailyStats {
   started: number;
@@ -116,7 +116,19 @@ export function formatBroadcastCaptionPrompt(): string {
   return "Пришлите текст/подпись для вложения или нажмите «Пропустить подпись».";
 }
 
-export function formatActiveRegistrationMessage(registration: Registration, timezoneName: string): string {
+export function formatActiveRegistrationMessage(
+  registration: Registration,
+  timezoneName: string,
+  viewerRole: EmployeeRole,
+): string {
+  registration = {
+    ...registration,
+    phoneE164: formatPhoneForRole(registration.phoneE164, viewerRole, {
+      registrationStatus: registration.status,
+      allowEmployeeActive: true,
+    }),
+  };
+
   return [
     "Активная регистрация:",
     `Номер: ${registration.phoneE164}`,
@@ -315,6 +327,11 @@ export function formatActiveRegistrations(
 }
 
 export function formatReminderMessage(registration: RegistrationWithEmployees, timezoneName: string): string {
+  registration = {
+    ...registration,
+    phoneE164: maskPhoneForEmployee(registration.phoneE164),
+  };
+
   return [
     "Напоминание по незавершенной регистрации:",
     `Номер: ${registration.phoneE164}`,
@@ -322,6 +339,23 @@ export function formatReminderMessage(registration: RegistrationWithEmployees, t
     `Старт: ${formatDateTime(registration.startedAt, timezoneName)}`,
     "Завершите регистрацию, укажите ошибку или отмените процесс.",
   ].join("\n");
+}
+
+export function formatEmployeeRegistrationCompletionMessage(
+  status: "SUCCESS" | "ERROR" | "CANCELLED",
+  phoneE164: string,
+): string {
+  const maskedPhone = maskPhoneForEmployee(phoneE164);
+
+  if (status === "SUCCESS") {
+    return `Р РµРіРёСЃС‚СЂР°С†РёСЏ СѓСЃРїРµС€РЅРѕ Р·Р°РІРµСЂС€РµРЅР°.\nРќРѕРјРµСЂ: ${maskedPhone}`;
+  }
+
+  if (status === "ERROR") {
+    return `Р РµРіРёСЃС‚СЂР°С†РёСЏ РїРµСЂРµРІРµРґРµРЅР° РІ РѕС€РёР±РєСѓ.\nРќРѕРјРµСЂ: ${maskedPhone}`;
+  }
+
+  return `РђРєС‚РёРІРЅР°СЏ СЂРµРіРёСЃС‚СЂР°С†РёСЏ РѕС‚РјРµРЅРµРЅР°.\nРќРѕРјРµСЂ: ${maskedPhone}`;
 }
 
 export function formatAntifraudAlert(registration: RegistrationWithEmployees, timezoneName: string): string {

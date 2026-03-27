@@ -1,6 +1,7 @@
+import { EmployeeRole, RegistrationStatus } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 
-import { normalizeUzPhone, validateUzPhone } from "../../src/lib/phone";
+import { formatPhoneForRole, maskPhoneForEmployee, normalizeUzPhone, validateUzPhone } from "../../src/lib/phone";
 
 describe("phone helpers", () => {
   it("normalizes Uzbek phone without plus to E.164", () => {
@@ -18,5 +19,29 @@ describe("phone helpers", () => {
     expect(validateUzPhone("+998901234567")).toBe(true);
     expect(validateUzPhone("901234567")).toBe(false);
     expect(validateUzPhone("123")).toBe(false);
+  });
+
+  it("masks employee-facing phone output to the last four digits", () => {
+    expect(maskPhoneForEmployee("+998901234567")).toBe("***4567");
+  });
+
+  it("keeps full phone only for admin or active employee context", () => {
+    expect(
+      formatPhoneForRole("+998901234567", EmployeeRole.ADMIN, {
+        registrationStatus: RegistrationStatus.SUCCESS,
+      }),
+    ).toBe("+998901234567");
+    expect(
+      formatPhoneForRole("+998901234567", EmployeeRole.EMPLOYEE, {
+        registrationStatus: RegistrationStatus.IN_PROGRESS,
+        allowEmployeeActive: true,
+      }),
+    ).toBe("+998901234567");
+    expect(
+      formatPhoneForRole("+998901234567", EmployeeRole.EMPLOYEE, {
+        registrationStatus: RegistrationStatus.SUCCESS,
+        allowEmployeeActive: true,
+      }),
+    ).toBe("***4567");
   });
 });

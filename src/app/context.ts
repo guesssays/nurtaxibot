@@ -14,6 +14,7 @@ import { AuthService } from "../services/auth.service";
 import { BroadcastService } from "../services/broadcast.service";
 import { EmployeeService } from "../services/employee.service";
 import { ExportService } from "../services/export.service";
+import { MessagePrivacyService } from "../services/message-privacy.service";
 import { NotificationService } from "../services/notification.service";
 import { RegistrationRequestService } from "../services/registration-request.service";
 import { RegistrationService } from "../services/registration.service";
@@ -35,6 +36,7 @@ export interface AppContext {
   reportService: ReportService;
   exportService: ExportService;
   notificationService: NotificationService;
+  messagePrivacyService: MessagePrivacyService;
   reminderService: ReminderService;
 }
 
@@ -58,6 +60,10 @@ export function createAppContext(requestId: string): AppContext {
     telegramClient,
     employeeRepository,
     logger.child({ service: "notifications" }),
+  );
+  const messagePrivacyService = new MessagePrivacyService(
+    telegramClient,
+    logger.child({ service: "message-privacy" }),
   );
   const userManagementService = new UserManagementService(employeeRepository, auditService);
 
@@ -92,6 +98,7 @@ export function createAppContext(requestId: string): AppContext {
     reportService: new ReportService(registrationRepository, dailyReportSnapshotRepository),
     exportService: new ExportService(registrationRepository, employeeRepository),
     notificationService,
+    messagePrivacyService,
     reminderService: new ReminderService(registrationRepository, notificationService),
   };
 }

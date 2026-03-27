@@ -108,6 +108,11 @@ export interface TelegramEditMessageTextPayload {
   reply_markup?: InlineKeyboardMarkup;
 }
 
+export interface TelegramDeleteMessagePayload {
+  chat_id: number | string;
+  message_id: number;
+}
+
 export interface TelegramAnswerCallbackQueryPayload {
   callback_query_id: string;
   text?: string;
