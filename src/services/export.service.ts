@@ -1,7 +1,7 @@
 import type { Employee, RegistrationSource, RegistrationStatus } from "@prisma/client";
 import * as XLSX from "xlsx";
 
-import { formatDateOnly, formatDateTime, formatDurationHuman } from "../lib/date";
+import { formatDateOnly, formatDateStamp, formatDateTime, formatDurationHuman, formatYearMonth } from "../lib/date";
 import { env } from "../lib/env";
 import { assertAdmin } from "../lib/rbac";
 import {
@@ -10,9 +10,9 @@ import {
   ROLE_LABELS,
   SOURCE_LABELS,
   STATUS_LABELS,
+  type ExportPeriodPresetValue,
 } from "../domain/constants";
 import { aggregateRegistrations } from "../lib/report-aggregation";
-import { formatSnapshotFileName } from "../lib/telegram/formatters";
 import { EmployeeRepository } from "../repositories/employee.repository";
 import {
   RegistrationRepository,
@@ -20,13 +20,14 @@ import {
 } from "../repositories/registration.repository";
 
 export interface ExportFilters {
-  start: Date;
-  end: Date;
+  start?: Date;
+  end?: Date;
   employeeId?: string;
   source?: RegistrationSource;
   status?: RegistrationStatus;
   antifraudOnly?: boolean;
   timezone?: string;
+  preset?: ExportPeriodPresetValue;
 }
 
 export interface WorkbookArtifact {
@@ -57,6 +58,49 @@ function toRegistrationRow(record: RegistrationWithEmployeesRecord, timezoneName
 function appendSheet(workbook: XLSX.WorkBook, name: string, rows: Array<Record<string, string | number>>) {
   const sheet = XLSX.utils.json_to_sheet(rows.length > 0 ? rows : [{ "Нет данных": "—" }]);
   XLSX.utils.book_append_sheet(workbook, sheet, name);
+}
+
+const EXPORT_SUMMARY_LABELS: Record<ExportPeriodPresetValue, string> = {
+  TODAY: "Сегодня",
+  YESTERDAY: "Вчера",
+  THIS_MONTH: "Этот месяц",
+  LAST_MONTH: "Прошлый месяц",
+  ALL_TIME: "Весь период",
+};
+
+function buildSummaryPeriodLabel(filters: ExportFilters, timezoneName: string): string {
+  if (filters.preset === "ALL_TIME") {
+    return "Весь период";
+  }
+
+  if (!filters.start || !filters.end) {
+    return "Период не задан";
+  }
+
+  if (filters.preset) {
+    return `${EXPORT_SUMMARY_LABELS[filters.preset]} (${formatDateOnly(filters.start, timezoneName)} - ${formatDateOnly(filters.end, timezoneName)})`;
+  }
+
+  return `${formatDateOnly(filters.start, timezoneName)} - ${formatDateOnly(filters.end, timezoneName)}`;
+}
+
+function buildExportFileName(filters: ExportFilters, timezoneName: string): string {
+  switch (filters.preset) {
+    case "TODAY":
+      return `wb-taxi-report-today-${formatDateStamp(filters.start ?? new Date(), timezoneName)}.xlsx`;
+    case "YESTERDAY":
+      return `wb-taxi-report-yesterday-${formatDateStamp(filters.start ?? new Date(), timezoneName)}.xlsx`;
+    case "THIS_MONTH":
+      return `wb-taxi-report-this-month-${formatYearMonth(filters.start ?? new Date(), timezoneName)}.xlsx`;
+    case "LAST_MONTH":
+      return `wb-taxi-report-last-month-${formatYearMonth(filters.start ?? new Date(), timezoneName)}.xlsx`;
+    case "ALL_TIME":
+      return "wb-taxi-report-all-time.xlsx";
+    default: {
+      const startDate = filters.start ?? new Date();
+      return `wb-taxi-report-${formatDateOnly(startDate, timezoneName).replace(/\./g, "-")}.xlsx`;
+    }
+  }
 }
 
 export class ExportService {
@@ -105,7 +149,7 @@ export class ExportService {
     const aggregated = aggregateRegistrations(registrations);
     const summaryRows: Array<Record<string, string | number>> = [
       {
-        Период: `${formatDateOnly(filters.start, timezoneName)} - ${formatDateOnly(filters.end, timezoneName)}`,
+        Период: buildSummaryPeriodLabel(filters, timezoneName),
         Начато: aggregated.totals.started,
         Успешно: aggregated.totals.success,
         Ошибки: aggregated.totals.errors,
@@ -138,7 +182,7 @@ export class ExportService {
 
     return {
       buffer,
-      fileName: formatSnapshotFileName(filters.start, timezoneName),
+      fileName: buildExportFileName(filters, timezoneName),
     };
   }
 }

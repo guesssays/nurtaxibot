@@ -30,6 +30,22 @@ export function getTodayBounds(timezoneName: string): DayBounds {
   return getDayBounds(new Date(), timezoneName);
 }
 
+export function getThisMonthBounds(timezoneName: string): DayBounds {
+  const zonedNow = dayjs().tz(timezoneName);
+  return {
+    start: zonedNow.startOf("month").toDate(),
+    end: zonedNow.toDate(),
+  };
+}
+
+export function getLastMonthBounds(timezoneName: string): DayBounds {
+  const zonedLastMonth = dayjs().tz(timezoneName).subtract(1, "month");
+  return {
+    start: zonedLastMonth.startOf("month").toDate(),
+    end: zonedLastMonth.endOf("month").toDate(),
+  };
+}
+
 export function formatDateTime(date: Date | null | undefined, timezoneName: string): string {
   if (!date) {
     return "—";
@@ -44,6 +60,22 @@ export function formatDateOnly(date: Date | null | undefined, timezoneName: stri
   }
 
   return dayjs(date).tz(timezoneName).format("DD.MM.YYYY");
+}
+
+export function formatYearMonth(date: Date | null | undefined, timezoneName: string): string {
+  if (!date) {
+    return "—";
+  }
+
+  return dayjs(date).tz(timezoneName).format("YYYY-MM");
+}
+
+export function formatDateStamp(date: Date | null | undefined, timezoneName: string): string {
+  if (!date) {
+    return "—";
+  }
+
+  return dayjs(date).tz(timezoneName).format("YYYY-MM-DD");
 }
 
 export function parseDateInput(dateInput: string, timezoneName: string): Date {

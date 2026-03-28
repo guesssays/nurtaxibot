@@ -12,6 +12,7 @@ export const ANTIFRAUD_REASONS = ["REGISTRATION_TOO_FAST"] as const;
 export const CANCEL_REASONS = ["EMPLOYEE_CANCELLED", "ADMIN_RELEASE"] as const;
 export const BROADCAST_TARGET_TYPES = ["ALL_ACTIVE_USERS", "ACTIVE_EMPLOYEES", "ACTIVE_ADMINS"] as const;
 export const BROADCAST_CONTENT_TYPES = ["TEXT", "PHOTO", "VIDEO", "DOCUMENT"] as const;
+export const EXPORT_PERIOD_PRESETS = ["TODAY", "YESTERDAY", "THIS_MONTH", "LAST_MONTH", "ALL_TIME"] as const;
 export const BROADCAST_STATUSES = [
   "DRAFT",
   "SENDING",
@@ -85,6 +86,7 @@ export type AntifraudReasonValue = (typeof ANTIFRAUD_REASONS)[number];
 export type CancelReasonValue = (typeof CANCEL_REASONS)[number];
 export type BroadcastTargetTypeValue = (typeof BROADCAST_TARGET_TYPES)[number];
 export type BroadcastContentTypeValue = (typeof BROADCAST_CONTENT_TYPES)[number];
+export type ExportPeriodPresetValue = (typeof EXPORT_PERIOD_PRESETS)[number];
 export type BroadcastStatusValue = (typeof BROADCAST_STATUSES)[number];
 export type BroadcastDeliveryStatusValue = (typeof BROADCAST_DELIVERY_STATUSES)[number];
 export type UserRegistrationRequestStatusValue = (typeof USER_REGISTRATION_REQUEST_STATUSES)[number];
@@ -138,6 +140,14 @@ export const BROADCAST_CONTENT_TYPE_LABELS: Record<BroadcastContentTypeValue, st
   PHOTO: "Фото",
   VIDEO: "Видео",
   DOCUMENT: "Файл",
+};
+
+export const EXPORT_PERIOD_LABELS: Record<ExportPeriodPresetValue, string> = {
+  TODAY: "Excel за сегодня",
+  YESTERDAY: "Excel за вчера",
+  THIS_MONTH: "Excel за этот месяц",
+  LAST_MONTH: "Excel за прошлый месяц",
+  ALL_TIME: "Excel за весь период",
 };
 
 export const BROADCAST_STATUS_LABELS: Record<BroadcastStatusValue, string> = {

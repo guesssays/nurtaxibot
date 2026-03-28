@@ -25,14 +25,14 @@ import { AuditService } from "./audit.service";
 
 function toBlockingConflict(registration: RegistrationWithEmployeesRecord): ConflictAppError {
   if (registration.status === "SUCCESS") {
-    return new ConflictAppError("РќРѕРјРµСЂ СѓР¶Рµ Р·Р°СЂРµРіРёСЃС‚СЂРёСЂРѕРІР°РЅ.", {
+    return new ConflictAppError("Номер уже зарегистрирован.", {
       code: "PHONE_ALREADY_SUCCESS",
       registrationId: registration.id,
       phoneE164: registration.phoneE164,
     });
   }
 
-  return new ConflictAppError("РќРѕРјРµСЂ СѓР¶Рµ РЅР°С…РѕРґРёС‚СЃСЏ РІ РѕР±СЂР°Р±РѕС‚РєРµ.", {
+  return new ConflictAppError("Номер уже находится в обработке.", {
     code: "PHONE_ALREADY_IN_PROGRESS",
     registrationId: registration.id,
     phoneE164: registration.phoneE164,
@@ -57,7 +57,7 @@ export class RegistrationService {
     source: RegistrationSource,
   ): Promise<RegistrationWithEmployeesRecord> {
     if (actor.role !== EmployeeRole.EMPLOYEE) {
-      throw new ForbiddenAppError("Р—Р°РїСѓСЃРє СЂРµРіРёСЃС‚СЂР°С†РёРё С‡РµСЂРµР· СЌС‚Рѕ РґРµР№СЃС‚РІРёРµ РґРѕСЃС‚СѓРїРµРЅ С‚РѕР»СЊРєРѕ СЃРѕС‚СЂСѓРґРЅРёРєСѓ.");
+      throw new ForbiddenAppError("Запуск регистрации через это действие доступен только сотруднику.");
     }
 
     const phoneE164 = normalizeUzPhone(phoneInput);
@@ -75,7 +75,7 @@ export class RegistrationService {
       const activeByEmployee = await this.registrationRepository.findActiveByEmployeeId(actor.id);
 
       if (activeByEmployee) {
-        throw new ConflictAppError("РЎРЅР°С‡Р°Р»Р° Р·Р°РІРµСЂС€РёС‚Рµ С‚РµРєСѓС‰СѓСЋ Р°РєС‚РёРІРЅСѓСЋ СЂРµРіРёСЃС‚СЂР°С†РёСЋ.", {
+        throw new ConflictAppError("Сначала завершите текущую активную регистрацию.", {
           code: "EMPLOYEE_ALREADY_HAS_ACTIVE_REGISTRATION",
           registrationId: activeByEmployee.id,
         });
@@ -144,7 +144,7 @@ export class RegistrationService {
 
         const activeByEmployee = await this.registrationRepository.findActiveByEmployeeId(actor.id);
         if (activeByEmployee) {
-          const conflict = new ConflictAppError("РЈ СЃРѕС‚СЂСѓРґРЅРёРєР° СѓР¶Рµ РµСЃС‚СЊ Р°РєС‚РёРІРЅР°СЏ СЂРµРіРёСЃС‚СЂР°С†РёСЏ.", {
+          const conflict = new ConflictAppError("У сотрудника уже есть активная регистрация.", {
             code: "EMPLOYEE_ALREADY_HAS_ACTIVE_REGISTRATION",
             registrationId: activeByEmployee.id,
           });
@@ -171,7 +171,7 @@ export class RegistrationService {
     antifraudTriggered: boolean;
   }> {
     if (actor.role !== EmployeeRole.EMPLOYEE) {
-      throw new ForbiddenAppError("Р—Р°РІРµСЂС€РµРЅРёРµ СЂРµРіРёСЃС‚СЂР°С†РёРё С‡РµСЂРµР· СЌС‚Рѕ РґРµР№СЃС‚РІРёРµ РґРѕСЃС‚СѓРїРЅРѕ С‚РѕР»СЊРєРѕ СЃРѕС‚СЂСѓРґРЅРёРєСѓ.");
+      throw new ForbiddenAppError("Завершение регистрации через это действие доступно только сотруднику.");
     }
 
     return this.finishActiveRegistration(actor, actor.id);
@@ -183,11 +183,11 @@ export class RegistrationService {
     comment?: string,
   ): Promise<RegistrationWithEmployeesRecord> {
     if (actor.role !== EmployeeRole.EMPLOYEE) {
-      throw new ForbiddenAppError("РџРѕРјРµС‚РєР° РѕС€РёР±РєРё РґРѕСЃС‚СѓРїРЅР° С‚РѕР»СЊРєРѕ СЃРѕС‚СЂСѓРґРЅРёРєСѓ.");
+      throw new ForbiddenAppError("Пометка ошибки доступна только сотруднику.");
     }
 
     if (reason === RegistrationErrorReason.OTHER && (!comment || comment.trim().length === 0)) {
-      throw new ValidationAppError("Р”Р»СЏ РїСЂРёС‡РёРЅС‹ OTHER РєРѕРјРјРµРЅС‚Р°СЂРёР№ РѕР±СЏР·Р°С‚РµР»РµРЅ.");
+      throw new ValidationAppError("Для причины OTHER комментарий обязателен.");
     }
 
     const prisma = getPrismaClient();
@@ -196,7 +196,7 @@ export class RegistrationService {
       const active = await this.registrationRepository.findActiveByEmployeeId(actor.id, tx);
 
       if (!active) {
-        throw new NotFoundAppError("РЈ РІР°СЃ РЅРµС‚ Р°РєС‚РёРІРЅРѕР№ СЂРµРіРёСЃС‚СЂР°С†РёРё.");
+        throw new NotFoundAppError("У вас нет активной регистрации.");
       }
 
       const errorAt = new Date();
@@ -214,7 +214,7 @@ export class RegistrationService {
       );
 
       if (!updated) {
-        throw new ConflictAppError("РќРµ СѓРґР°Р»РѕСЃСЊ РїРѕРјРµС‚РёС‚СЊ СЂРµРіРёСЃС‚СЂР°С†РёСЋ РѕС€РёР±РєРѕР№. РџРѕРїСЂРѕР±СѓР№С‚Рµ РµС‰Рµ СЂР°Р·.");
+        throw new ConflictAppError("Не удалось пометить регистрацию ошибкой. Попробуйте еще раз.");
       }
 
       await this.auditService.log(
@@ -236,7 +236,7 @@ export class RegistrationService {
 
   public async cancelOwnActiveRegistration(actor: Employee): Promise<RegistrationWithEmployeesRecord> {
     if (actor.role !== EmployeeRole.EMPLOYEE) {
-      throw new ForbiddenAppError("РћС‚РјРµРЅР° СЂРµРіРёСЃС‚СЂР°С†РёРё РґРѕСЃС‚СѓРїРЅР° С‚РѕР»СЊРєРѕ СЃРѕС‚СЂСѓРґРЅРёРєСѓ.");
+      throw new ForbiddenAppError("Отмена регистрации доступна только сотруднику.");
     }
 
     return this.cancelRegistration(actor, actor.id, CancelReason.EMPLOYEE_CANCELLED);
@@ -255,7 +255,7 @@ export class RegistrationService {
       const registration = await this.registrationRepository.findById(registrationId, tx);
 
       if (!registration || registration.status !== "IN_PROGRESS") {
-        throw new NotFoundAppError("РђРєС‚РёРІРЅР°СЏ СЂРµРіРёСЃС‚СЂР°С†РёСЏ РЅРµ РЅР°Р№РґРµРЅР°.");
+        throw new NotFoundAppError("Активная регистрация не найдена.");
       }
 
       const updated = await this.registrationRepository.transitionToCancelled(
@@ -270,7 +270,7 @@ export class RegistrationService {
       );
 
       if (!updated) {
-        throw new ConflictAppError("РќРµ СѓРґР°Р»РѕСЃСЊ СЃРЅСЏС‚СЊ Р°РєС‚РёРІРЅСѓСЋ СЂРµРіРёСЃС‚СЂР°С†РёСЋ.");
+        throw new ConflictAppError("Не удалось снять активную регистрацию.");
       }
 
       await this.auditService.log(
@@ -296,18 +296,18 @@ export class RegistrationService {
 
   public async searchWithinOwnActiveRegistration(actor: Employee, phoneInput: string) {
     if (actor.role !== EmployeeRole.EMPLOYEE) {
-      throw new ForbiddenAppError("РџРѕРёСЃРє РІ Р°РєС‚РёРІРЅРѕР№ СЂРµРіРёСЃС‚СЂР°С†РёРё РґРѕСЃС‚СѓРїРµРЅ С‚РѕР»СЊРєРѕ СЃРѕС‚СЂСѓРґРЅРёРєСѓ.");
+      throw new ForbiddenAppError("Поиск в активной регистрации доступен только сотруднику.");
     }
 
     const phoneE164 = normalizeUzPhone(phoneInput);
     const active = await this.registrationRepository.findActiveByEmployeeId(actor.id);
 
     if (!active) {
-      throw new NotFoundAppError("РЈ РІР°СЃ РЅРµС‚ Р°РєС‚РёРІРЅРѕР№ СЂРµРіРёСЃС‚СЂР°С†РёРё.");
+      throw new NotFoundAppError("У вас нет активной регистрации.");
     }
 
     if (active.phoneE164 !== phoneE164) {
-      throw new ForbiddenAppError("Р”РѕСЃС‚СѓРїРµРЅ С‚РѕР»СЊРєРѕ РЅРѕРјРµСЂ РІР°С€РµР№ С‚РµРєСѓС‰РµР№ Р°РєС‚РёРІРЅРѕР№ СЂРµРіРёСЃС‚СЂР°С†РёРё.");
+      throw new ForbiddenAppError("Доступен только номер вашей текущей активной регистрации.");
     }
 
     return [active];
@@ -370,7 +370,7 @@ export class RegistrationService {
       const active = await this.registrationRepository.findActiveByEmployeeId(activeEmployeeId, tx);
 
       if (!active) {
-        throw new NotFoundAppError("РЈ РІР°СЃ РЅРµС‚ Р°РєС‚РёРІРЅРѕР№ СЂРµРіРёСЃС‚СЂР°С†РёРё.");
+        throw new NotFoundAppError("У вас нет активной регистрации.");
       }
 
       const finishedAt = new Date();
@@ -393,7 +393,7 @@ export class RegistrationService {
       );
 
       if (!updated) {
-        throw new ConflictAppError("РќРµ СѓРґР°Р»РѕСЃСЊ Р·Р°РІРµСЂС€РёС‚СЊ СЂРµРіРёСЃС‚СЂР°С†РёСЋ. РџРѕРїСЂРѕР±СѓР№С‚Рµ РµС‰Рµ СЂР°Р·.");
+        throw new ConflictAppError("Не удалось завершить регистрацию. Попробуйте еще раз.");
       }
 
       await this.auditService.log(
@@ -428,7 +428,7 @@ export class RegistrationService {
       const active = await this.registrationRepository.findActiveByEmployeeId(activeEmployeeId, tx);
 
       if (!active) {
-        throw new NotFoundAppError("РђРєС‚РёРІРЅР°СЏ СЂРµРіРёСЃС‚СЂР°С†РёСЏ РЅРµ РЅР°Р№РґРµРЅР°.");
+        throw new NotFoundAppError("Активная регистрация не найдена.");
       }
 
       const updated = await this.registrationRepository.transitionToCancelled(
@@ -443,7 +443,7 @@ export class RegistrationService {
       );
 
       if (!updated) {
-        throw new ConflictAppError("РќРµ СѓРґР°Р»РѕСЃСЊ РѕС‚РјРµРЅРёС‚СЊ СЂРµРіРёСЃС‚СЂР°С†РёСЋ. РџРѕРїСЂРѕР±СѓР№С‚Рµ РµС‰Рµ СЂР°Р·.");
+        throw new ConflictAppError("Не удалось отменить регистрацию. Попробуйте еще раз.");
       }
 
       await this.auditService.log(

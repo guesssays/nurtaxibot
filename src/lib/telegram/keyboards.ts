@@ -7,6 +7,7 @@ import {
   EMPLOYEE_MENU_LABELS,
   EMPLOYEE_ROLES,
   ERROR_REASON_LABELS,
+  EXPORT_PERIOD_LABELS,
   GUEST_MENU_LABELS,
   REGISTRATION_ERROR_REASONS,
   REGISTRATION_SOURCES,
@@ -258,10 +259,17 @@ export function buildAdminReportKeyboard(): InlineKeyboardMarkup {
 
 export function buildAdminExportKeyboard(): InlineKeyboardMarkup {
   return {
-    inline_keyboard: [[
-      { text: "Excel за сегодня", callback_data: `${TELEGRAM_CALLBACKS.EXPORT}:TODAY` },
-      { text: "Excel за вчера", callback_data: `${TELEGRAM_CALLBACKS.EXPORT}:YESTERDAY` },
-    ]],
+    inline_keyboard: [
+      [
+        { text: EXPORT_PERIOD_LABELS.TODAY, callback_data: `${TELEGRAM_CALLBACKS.EXPORT}:TODAY` },
+        { text: EXPORT_PERIOD_LABELS.YESTERDAY, callback_data: `${TELEGRAM_CALLBACKS.EXPORT}:YESTERDAY` },
+      ],
+      [
+        { text: EXPORT_PERIOD_LABELS.THIS_MONTH, callback_data: `${TELEGRAM_CALLBACKS.EXPORT}:THIS_MONTH` },
+        { text: EXPORT_PERIOD_LABELS.LAST_MONTH, callback_data: `${TELEGRAM_CALLBACKS.EXPORT}:LAST_MONTH` },
+      ],
+      [{ text: EXPORT_PERIOD_LABELS.ALL_TIME, callback_data: `${TELEGRAM_CALLBACKS.EXPORT}:ALL_TIME` }],
+    ],
   };
 }
 

@@ -75,6 +75,11 @@ function createLoggerProxy(logs: LogEntry[], context: Record<string, unknown>): 
 export interface TransportHarnessOptions {
   startRegistrationError?: unknown;
   deleteMessageError?: unknown;
+  role?: EmployeeRole;
+  exportWorkbook?: {
+    fileName: string;
+    buffer: Buffer;
+  };
 }
 
 export interface StartRegistrationCall {
@@ -82,20 +87,26 @@ export interface StartRegistrationCall {
   source: RegistrationSource;
 }
 
+export interface ExportWorkbookCall {
+  filters: Record<string, unknown>;
+}
+
 export function createTransportHarness(options: TransportHarnessOptions = {}) {
   const logs: LogEntry[] = [];
   const messages: TelegramSendMessagePayload[] = [];
   const callbackAnswers: TelegramAnswerCallbackQueryPayload[] = [];
   const startRegistrationCalls: StartRegistrationCall[] = [];
+  const exportWorkbookCalls: ExportWorkbookCall[] = [];
   const deletedMessages: Array<{ chatId: number | string; messageId: number }> = [];
   const editedMessages: Array<{ chatId: number | string; messageId: number; text: string }> = [];
+  const sentDocuments: Array<{ chatId: number | string; fileName: string; caption?: string }> = [];
 
   const employee: Employee = {
     id: "emp-1",
     telegramId: BigInt(5422089180),
     employeeCode: "EMP-001",
     fullName: "Employee Test",
-    role: EmployeeRole.EMPLOYEE,
+    role: options.role ?? EmployeeRole.EMPLOYEE,
     isActive: true,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -131,8 +142,14 @@ export function createTransportHarness(options: TransportHarnessOptions = {}) {
     sendVideo: async () => {
       throw new Error("Not implemented in test harness.");
     },
-    sendDocument: async () => {
-      throw new Error("Not implemented in test harness.");
+    sendDocument: async (chatId: number | string, fileName: string, _buffer: Buffer, caption?: string) => {
+      sentDocuments.push({ chatId, fileName, caption });
+      return {
+        message_id: messages.length + sentDocuments.length,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: Number(chatId), type: "private" },
+        caption,
+      } as TelegramMessage;
     },
     sendDocumentByFileId: async () => {
       throw new Error("Not implemented in test harness.");
@@ -303,7 +320,15 @@ export function createTransportHarness(options: TransportHarnessOptions = {}) {
       }),
     } as never,
     reportService: {} as never,
-    exportService: {} as never,
+    exportService: {
+      generateWorkbook: async (_actor: Employee, filters: Record<string, unknown>) => {
+        exportWorkbookCalls.push({ filters });
+        return options.exportWorkbook ?? {
+          fileName: "wb-taxi-report-test.xlsx",
+          buffer: Buffer.from("test"),
+        };
+      },
+    } as never,
     notificationService: {
       notifyAntifraud: async () => undefined,
     } as never,
@@ -317,8 +342,10 @@ export function createTransportHarness(options: TransportHarnessOptions = {}) {
     messages,
     callbackAnswers,
     startRegistrationCalls,
+    exportWorkbookCalls,
     deletedMessages,
     editedMessages,
+    sentDocuments,
     transport: new TelegramBotTransport(appContext),
     getSession: () => session,
   };

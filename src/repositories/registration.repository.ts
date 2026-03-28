@@ -102,8 +102,8 @@ export interface CancelRegistrationInput {
 }
 
 export interface ReportQueryFilters {
-  start: Date;
-  end: Date;
+  start?: Date;
+  end?: Date;
   employeeId?: string;
   source?: RegistrationSource;
   status?: RegistrationStatus;
@@ -306,10 +306,12 @@ export class RegistrationRepository {
   public async listAntifraud(filters: ReportQueryFilters, db?: PrismaTransactionClient) {
     return getDbClient(db).registration.findMany({
       where: {
-        startedAt: {
-          gte: filters.start,
-          lte: filters.end,
-        },
+        startedAt: filters.start || filters.end
+          ? {
+              gte: filters.start,
+              lte: filters.end,
+            }
+          : undefined,
         status: RegistrationStatus.SUCCESS,
         antifraudFlag: true,
         startedByEmployeeId: filters.employeeId,
@@ -325,10 +327,12 @@ export class RegistrationRepository {
   public async listForReport(filters: ReportQueryFilters, db?: PrismaTransactionClient) {
     return getDbClient(db).registration.findMany({
       where: {
-        startedAt: {
-          gte: filters.start,
-          lte: filters.end,
-        },
+        startedAt: filters.start || filters.end
+          ? {
+              gte: filters.start,
+              lte: filters.end,
+            }
+          : undefined,
         startedByEmployeeId: filters.employeeId,
         source: filters.source,
         status: filters.status,

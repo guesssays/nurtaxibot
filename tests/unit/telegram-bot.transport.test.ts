@@ -1,10 +1,12 @@
-import { RegistrationErrorReason, RegistrationSource } from "@prisma/client";
-import { describe, expect, it } from "vitest";
+import { EmployeeRole, RegistrationErrorReason, RegistrationSource } from "@prisma/client";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { TELEGRAM_CALLBACKS, EMPLOYEE_MENU_LABELS } from "../../src/domain/constants";
+import { ADMIN_MENU_LABELS, EMPLOYEE_MENU_LABELS, TELEGRAM_CALLBACKS } from "../../src/domain/constants";
+import { getLastMonthBounds, getThisMonthBounds } from "../../src/lib/date";
 import { ConflictAppError } from "../../src/lib/errors";
 import { formatPhoneConflictMessage } from "../../src/lib/telegram/formatters";
 import type { TelegramUpdate } from "../../src/lib/telegram/types";
+import { expectNoMojibake } from "../helpers/assert-no-mojibake";
 import { createTransportHarness } from "../helpers/telegram-transport-harness";
 
 function createMessageUpdate(text: string, messageId: number = 1): TelegramUpdate {
@@ -41,6 +43,10 @@ function createCallbackUpdate(data: string, messageId: number = 2): TelegramUpda
     },
   };
 }
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("TelegramBotTransport registration confirm flow", () => {
   it("keeps source and normalized phone through preview and confirm", async () => {
@@ -199,5 +205,71 @@ describe("TelegramBotTransport registration confirm flow", () => {
           entry.message === "Sensitive phone input delete failed",
       ),
     ).toBe(true);
+  });
+});
+
+describe("TelegramBotTransport admin text and export flow", () => {
+  it("shows clean russian texts in admin menus", async () => {
+    const harness = createTransportHarness({ role: EmployeeRole.ADMIN });
+
+    await harness.transport.handleUpdate(createMessageUpdate(ADMIN_MENU_LABELS.REPORTS, 80));
+    expectNoMojibake(harness.messages.at(-1)?.text ?? "");
+
+    await harness.transport.handleUpdate(createMessageUpdate(ADMIN_MENU_LABELS.EXPORT, 81));
+    const exportMenuMessage = harness.messages.at(-1);
+    expectNoMojibake(exportMenuMessage?.text ?? "");
+    const exportButtons = (exportMenuMessage?.reply_markup as { inline_keyboard: Array<Array<{ text: string }>> }).inline_keyboard
+      .flat()
+      .map((button) => button.text);
+    expect(exportButtons).toEqual(
+      expect.arrayContaining([
+        "Excel за сегодня",
+        "Excel за вчера",
+        "Excel за этот месяц",
+        "Excel за прошлый месяц",
+        "Excel за весь период",
+      ]),
+    );
+
+    await harness.transport.handleUpdate(createMessageUpdate(ADMIN_MENU_LABELS.MANAGE_EMPLOYEES, 82));
+    expectNoMojibake(harness.messages.at(-1)?.text ?? "");
+
+    await harness.transport.handleUpdate(createMessageUpdate(ADMIN_MENU_LABELS.BROADCAST, 83));
+    expectNoMojibake(harness.messages.at(-1)?.text ?? "");
+  });
+
+  it("routes new export presets to correct ranges and supports all-time", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-28T05:15:00.000Z"));
+
+    const harness = createTransportHarness({ role: EmployeeRole.ADMIN });
+
+    await harness.transport.handleUpdate(createCallbackUpdate(`${TELEGRAM_CALLBACKS.EXPORT}:THIS_MONTH`, 90));
+    await harness.transport.handleUpdate(createCallbackUpdate(`${TELEGRAM_CALLBACKS.EXPORT}:LAST_MONTH`, 91));
+    await harness.transport.handleUpdate(createCallbackUpdate(`${TELEGRAM_CALLBACKS.EXPORT}:ALL_TIME`, 92));
+
+    expect(harness.exportWorkbookCalls).toHaveLength(3);
+    expect(harness.sentDocuments).toHaveLength(3);
+
+    const thisMonth = harness.exportWorkbookCalls[0]?.filters as { start: Date; end: Date; preset: string };
+    const lastMonth = harness.exportWorkbookCalls[1]?.filters as { start: Date; end: Date; preset: string };
+    const allTime = harness.exportWorkbookCalls[2]?.filters as { start?: Date; end?: Date; preset: string };
+
+    const expectedThisMonth = getThisMonthBounds("Asia/Tashkent");
+    const expectedLastMonth = getLastMonthBounds("Asia/Tashkent");
+
+    expect(thisMonth.preset).toBe("THIS_MONTH");
+    expect(thisMonth.start.toISOString()).toBe(expectedThisMonth.start.toISOString());
+    expect(thisMonth.end.toISOString()).toBe(expectedThisMonth.end.toISOString());
+
+    expect(lastMonth.preset).toBe("LAST_MONTH");
+    expect(lastMonth.start.toISOString()).toBe(expectedLastMonth.start.toISOString());
+    expect(lastMonth.end.toISOString()).toBe(expectedLastMonth.end.toISOString());
+
+    expect(allTime.preset).toBe("ALL_TIME");
+    expect(allTime.start).toBeUndefined();
+    expect(allTime.end).toBeUndefined();
+
+    vi.useRealTimers();
   });
 });
