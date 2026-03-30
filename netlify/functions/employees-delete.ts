@@ -4,12 +4,10 @@ import { z } from "zod";
 
 import { createAppContext } from "../../src/app/context";
 import { createRequestId, handleHttpError, jsonResponse, parseJsonBody, requireMethod } from "../../src/lib/http";
-import { employeeUpdateSchema } from "../../src/lib/validators";
 import { authorizeHttpRequest } from "../../src/transport/http-admin";
 
-const updateBodySchema = z.object({
+const deleteBodySchema = z.object({
   employeeId: z.string().trim().min(1),
-  data: employeeUpdateSchema,
 });
 
 export const handler: Handler = async (event) => {
@@ -17,10 +15,10 @@ export const handler: Handler = async (event) => {
   const appContext = createAppContext(requestId);
 
   try {
-    requireMethod(event, ["PATCH"]);
+    requireMethod(event, ["POST"]);
     const actor = await authorizeHttpRequest(appContext, event, [EmployeeRole.ADMIN]);
-    const payload = parseJsonBody(event, updateBodySchema);
-    const result = await appContext.employeeService.updateEmployee(actor, payload.employeeId, payload.data);
+    const payload = parseJsonBody(event, deleteBodySchema);
+    const result = await appContext.employeeService.deleteEmployee(actor, payload.employeeId);
 
     return jsonResponse(200, {
       ok: true,

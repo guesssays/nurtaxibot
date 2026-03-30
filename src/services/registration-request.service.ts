@@ -10,7 +10,6 @@ import {
   ConflictAppError,
   ForbiddenAppError,
   NotFoundAppError,
-  ValidationAppError,
 } from "../lib/errors";
 import { assertAdmin } from "../lib/rbac";
 import {
@@ -34,6 +33,7 @@ import {
 } from "../repositories/registration-request.repository";
 import { AuditService } from "./audit.service";
 import { NotificationService } from "./notification.service";
+import { UserManagementService } from "./user-management.service";
 
 export interface CreateRegistrationRequestResult {
   request: RegistrationRequestRecord;
@@ -64,6 +64,7 @@ export class RegistrationRequestService {
   public constructor(
     private readonly registrationRequestRepository: RegistrationRequestRepository,
     private readonly employeeRepository: EmployeeRepository,
+    private readonly userManagementService: UserManagementService,
     private readonly auditService: AuditService,
     private readonly notificationService: NotificationService,
     private readonly timezoneName: string,
@@ -159,28 +160,14 @@ export class RegistrationRequestService {
         throw new ConflictAppError("Эта заявка уже была обработана.");
       }
 
-      const existingEmployee = await this.employeeRepository.findByTelegramId(request.telegramId, tx);
-      let approvedEmployeeId: string;
-
-      if (existingEmployee) {
-        const updatedEmployee = await this.employeeRepository.update(existingEmployee.id, {
-          telegramId: request.telegramId,
-          employeeCode: parsedInput.employeeCode,
-          fullName: parsedInput.fullName,
-          role: parsedInput.role,
-          isActive: parsedInput.isActive,
-        }, tx);
-        approvedEmployeeId = updatedEmployee.id;
-      } else {
-        const createdEmployee = await this.employeeRepository.create({
-          telegramId: request.telegramId,
-          employeeCode: parsedInput.employeeCode,
-          fullName: parsedInput.fullName,
-          role: parsedInput.role,
-          isActive: parsedInput.isActive,
-        }, tx);
-        approvedEmployeeId = createdEmployee.id;
-      }
+      const mutation = await this.userManagementService.provisionEmployeeFromRegistrationRequest(actor, {
+        telegramId: request.telegramId,
+        employeeCode: parsedInput.employeeCode,
+        fullName: parsedInput.fullName,
+        phoneE164: null,
+        role: parsedInput.role,
+        isActive: parsedInput.isActive,
+      });
 
       const reviewedRequest = await this.registrationRequestRepository.updateReview(
         request.id,
@@ -188,7 +175,7 @@ export class RegistrationRequestService {
           status: UserRegistrationRequestStatus.APPROVED,
           reviewedByEmployeeId: actor.id,
           reviewComment: parsedInput.reviewComment ?? null,
-          approvedEmployeeId,
+          approvedEmployeeId: mutation.employee.id,
           reviewedAt: new Date(),
         },
         tx,
@@ -199,7 +186,8 @@ export class RegistrationRequestService {
         "USER_REGISTRATION_REQUEST",
         toPrismaJsonValue({
           requestId: request.id,
-          employeeId: approvedEmployeeId,
+          employeeId: mutation.employee.id,
+          employeeMutationAction: mutation.action,
           role: parsedInput.role,
           employeeCode: parsedInput.employeeCode,
           fullName: parsedInput.fullName,

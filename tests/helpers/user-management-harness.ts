@@ -23,8 +23,10 @@ export function createAdmin(overrides: Partial<Employee> = {}): Employee {
     telegramId: overrides.telegramId ?? BigInt(9001),
     employeeCode: overrides.employeeCode ?? "ADM-001",
     fullName: overrides.fullName ?? "Main Admin",
+    phoneE164: overrides.phoneE164 ?? "+998900000001",
     role: EmployeeRole.ADMIN,
     isActive: overrides.isActive ?? true,
+    deletedAt: overrides.deletedAt ?? null,
     ...overrides,
   });
 }
@@ -55,40 +57,87 @@ export function createRegistrationRequestRecord(
   };
 }
 
+interface LookupOptions {
+  includeDeleted?: boolean;
+}
+
 export class InMemoryEmployeeRepository {
   public constructor(public readonly employees: Employee[]) {}
 
-  public async list(options?: { includeInactive?: boolean }): Promise<Employee[]> {
-    if (options?.includeInactive === false) {
-      return this.employees.filter((employee) => employee.isActive);
-    }
+  public async list(options?: { includeInactive?: boolean; includeDeleted?: boolean }): Promise<Employee[]> {
+    return this.employees.filter((employee) => {
+      if (!options?.includeDeleted && employee.deletedAt) {
+        return false;
+      }
 
-    return [...this.employees];
+      if (options?.includeInactive === false && !employee.isActive) {
+        return false;
+      }
+
+      return true;
+    });
   }
 
-  public async findById(id: string): Promise<Employee | null> {
-    return this.employees.find((employee) => employee.id === id) ?? null;
+  public async findById(id: string, _db?: unknown, options?: LookupOptions): Promise<Employee | null> {
+    return this.employees.find((employee) => employee.id === id && (options?.includeDeleted || !employee.deletedAt)) ?? null;
   }
 
-  public async findByTelegramId(telegramId: bigint): Promise<Employee | null> {
-    return this.employees.find((employee) => employee.telegramId === telegramId) ?? null;
+  public async findByTelegramId(telegramId: bigint, _db?: unknown, options?: LookupOptions): Promise<Employee | null> {
+    return this.employees.find((employee) => employee.telegramId === telegramId && (options?.includeDeleted || !employee.deletedAt)) ?? null;
+  }
+
+  public async findByEmployeeCode(employeeCode: string, _db?: unknown, options?: LookupOptions): Promise<Employee | null> {
+    return this.employees.find((employee) => employee.employeeCode === employeeCode && (options?.includeDeleted || !employee.deletedAt)) ?? null;
+  }
+
+  public async findByPhoneE164(phoneE164: string, _db?: unknown, options?: LookupOptions): Promise<Employee | null> {
+    return this.employees.find((employee) => employee.phoneE164 === phoneE164 && (options?.includeDeleted || !employee.deletedAt)) ?? null;
+  }
+
+  public async findDeletedByAnyIdentifier(input: {
+    telegramId?: bigint | null;
+    employeeCode?: string | null;
+    phoneE164?: string | null;
+  }): Promise<Employee[]> {
+    return this.employees.filter((employee) => {
+      if (!employee.deletedAt) {
+        return false;
+      }
+
+      return (
+        (input.telegramId !== undefined && input.telegramId !== null && employee.telegramId === input.telegramId) ||
+        (Boolean(input.employeeCode) && employee.employeeCode === input.employeeCode) ||
+        (Boolean(input.phoneE164) && employee.phoneE164 === input.phoneE164)
+      );
+    });
   }
 
   public async listAdminsAndSupervisors(): Promise<Employee[]> {
     return this.employees.filter(
       (employee) =>
+        !employee.deletedAt &&
         employee.isActive &&
         (employee.role === EmployeeRole.ADMIN || employee.role === EmployeeRole.SUPERVISOR),
     );
   }
 
   public async create(input: EmployeeCreateInput): Promise<Employee> {
-    if (this.employees.some((employee) => employee.employeeCode === input.employeeCode)) {
+    if (this.employees.some((employee) => !employee.deletedAt && employee.employeeCode === input.employeeCode)) {
       throw new Error("Duplicate employee code");
     }
 
-    if (input.telegramId !== undefined && this.employees.some((employee) => employee.telegramId === input.telegramId)) {
+    if (
+      input.telegramId !== undefined &&
+      this.employees.some((employee) => !employee.deletedAt && employee.telegramId === input.telegramId)
+    ) {
       throw new Error("Duplicate telegram id");
+    }
+
+    if (
+      input.phoneE164 &&
+      this.employees.some((employee) => !employee.deletedAt && employee.phoneE164 === input.phoneE164)
+    ) {
+      throw new Error("Duplicate phone");
     }
 
     const employee: Employee = {
@@ -96,8 +145,10 @@ export class InMemoryEmployeeRepository {
       telegramId: input.telegramId ?? null,
       employeeCode: input.employeeCode,
       fullName: input.fullName,
+      phoneE164: input.phoneE164 ?? null,
       role: input.role,
       isActive: input.isActive,
+      deletedAt: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -125,6 +176,10 @@ export class InMemoryEmployeeRepository {
       employee.fullName = input.fullName;
     }
 
+    if (input.phoneE164 !== undefined) {
+      employee.phoneE164 = input.phoneE164;
+    }
+
     if (input.role !== undefined) {
       employee.role = input.role;
     }
@@ -134,6 +189,31 @@ export class InMemoryEmployeeRepository {
     }
 
     employee.updatedAt = new Date();
+    return employee;
+  }
+
+  public async softDelete(id: string): Promise<Employee> {
+    const employee = this.employees.find((item) => item.id === id);
+
+    if (!employee) {
+      throw new Error("Employee not found");
+    }
+
+    employee.isActive = false;
+    employee.deletedAt = new Date();
+    employee.updatedAt = new Date();
+    return employee;
+  }
+
+  public async restore(id: string, input: EmployeeUpdateInput): Promise<Employee> {
+    const employee = this.employees.find((item) => item.id === id);
+
+    if (!employee) {
+      throw new Error("Employee not found");
+    }
+
+    employee.deletedAt = null;
+    await this.update(id, input);
     return employee;
   }
 }

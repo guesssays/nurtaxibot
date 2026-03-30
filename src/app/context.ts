@@ -79,6 +79,7 @@ export function createAppContext(requestId: string): AppContext {
     registrationRequestService: new RegistrationRequestService(
       registrationRequestRepository,
       employeeRepository,
+      userManagementService,
       auditService,
       notificationService,
       env.APP_TIMEZONE,

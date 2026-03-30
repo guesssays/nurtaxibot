@@ -34,7 +34,7 @@ import {
   buildBroadcastPreviewKeyboard,
   buildBroadcastResultKeyboard,
   buildBroadcastSkipCaptionKeyboard,
-  buildEmployeeToggleKeyboard,
+  buildEmployeeManagementKeyboard,
   buildErrorReasonKeyboard,
   buildGuestEntryKeyboard,
   buildGuestPreviewKeyboard,
@@ -84,6 +84,7 @@ import {
   formatAdminAddUserIntro,
   formatAdminAddUserPreview,
   formatAdminApprovalPreview,
+  formatEmployeeManagementCard,
   formatGuestRegistrationEntryMessage,
   formatGuestRegistrationPreview,
   formatGuestRegistrationStatus,
@@ -92,6 +93,7 @@ import {
   formatRegistrationRequestCreated,
   formatRegistrationRequestDetails,
   formatUserCreatedMessage,
+  formatUserSavedMessage,
 } from "../lib/telegram/user-management-formatters";
 import type { SensitiveMessageTracking } from "../services/message-privacy.service";
 import type { BroadcastDocument, BroadcastPhoto, BroadcastVideo } from "./telegram-bot.types";
@@ -138,9 +140,12 @@ const guestRegistrationSessionSchema = z.object({
 });
 
 const adminAddUserSessionSchema = z.object({
-  telegramId: z.string().regex(/^\d+$/),
+  mode: z.enum(["create", "edit"]).default("create"),
+  employeeId: z.string().trim().min(1).optional(),
+  telegramId: z.string().regex(/^\d+$/).optional(),
   fullName: z.string().trim().min(3).max(255).optional(),
   employeeCode: z.string().trim().min(2).max(64).optional(),
+  phoneE164: z.string().trim().min(1).max(32).nullable().optional(),
   role: z.nativeEnum(EmployeeRole).optional(),
   isActive: z.boolean().optional(),
 });
@@ -192,7 +197,31 @@ function isGuestState(state: SessionState): boolean {
 }
 
 function isSkipText(text: string | null): boolean {
-  return text === GUEST_MENU_LABELS.SKIP;
+  if (!text) {
+    return false;
+  }
+
+  const normalizedText = text.trim().toLocaleLowerCase("ru-RU");
+  return normalizedText === GUEST_MENU_LABELS.SKIP.toLocaleLowerCase("ru-RU") || normalizedText === "пропустить";
+}
+
+function canSaveAdminUserDraft(
+  draft: z.infer<typeof adminAddUserSessionSchema> | null,
+): draft is z.infer<typeof adminAddUserSessionSchema> & {
+  fullName: string;
+  employeeCode: string;
+  role: EmployeeRole;
+  isActive: boolean;
+} {
+  if (!draft?.fullName || !draft.employeeCode || !draft.role || draft.isActive === undefined) {
+    return false;
+  }
+
+  if (draft.mode === "edit") {
+    return Boolean(draft.employeeId);
+  }
+
+  return Boolean(draft.telegramId);
 }
 
 function getTelegramIdentity(user: TelegramUser | undefined): {
@@ -777,7 +806,7 @@ export class TelegramBotTransport {
     }
 
     if (text === ADMIN_MENU_LABELS.MANAGE_EMPLOYEES) {
-      await this.openAdminUserManagementMenu(employee, chatId, telegramId);
+      await this.showUsersList(employee, chatId);
       return;
     }
 
@@ -934,8 +963,28 @@ export class TelegramBotTransport {
       return;
     }
 
+    if (
+      state === "ADMIN_ADD_USER_TELEGRAM_ID" ||
+      state === "ADMIN_ADD_USER_FULL_NAME" ||
+      state === "ADMIN_ADD_USER_EMPLOYEE_CODE" ||
+      state === "ADMIN_ADD_USER_PHONE"
+    ) {
+      const handled = await this.handleAdminAddUserTextStep(
+        employee,
+        chatId,
+        telegramId,
+        state,
+        sessionData,
+        text,
+      );
+
+      if (handled) {
+        return;
+      }
+    }
+
     if (state === "ADMIN_ADD_USER_TELEGRAM_ID") {
-      if (!text || !/^\d{5,20}$/.test(text)) {
+      if (!text || !/^\d+$/.test(text)) {
         await this.safeSendMessage(chatId, "Отправьте корректный Telegram ID пользователя.");
         return;
       }
@@ -1456,6 +1505,26 @@ export class TelegramBotTransport {
       if (action === TELEGRAM_CALLBACKS.REGISTRATION_REQUEST_BACK && value) {
         await this.safeAnswerCallback(callbackId);
         await this.showPendingRegistrationRequests(employee, chatId, telegramId);
+        return;
+      }
+
+      if (action === TELEGRAM_CALLBACKS.EMPLOYEE_EDIT && value) {
+        await this.safeAnswerCallback(callbackId, "Открываю редактирование пользователя.");
+        await this.startAdminEditUserFlow(employee, chatId, telegramId, value);
+        return;
+      }
+
+      if (action === TELEGRAM_CALLBACKS.EMPLOYEE_DELETE && value) {
+        const deleted = await this.appContext.employeeService.deleteEmployee(employee, value);
+        await this.safeAnswerCallback(callbackId, "Пользователь удалён.");
+        await this.safeSendMessage(chatId, formatEmployeeManagementCard(deleted.employee));
+        return;
+      }
+
+      if (action === TELEGRAM_CALLBACKS.EMPLOYEE_RESTORE && value) {
+        const restored = await this.appContext.employeeService.restoreEmployee(employee, value);
+        await this.safeAnswerCallback(callbackId, "Пользователь восстановлен.");
+        await this.safeSendMessage(chatId, formatUserSavedMessage(restored.employee, "RESTORED"));
         return;
       }
 
@@ -2171,6 +2240,164 @@ export class TelegramBotTransport {
     );
   }
 
+  private async handleAdminAddUserTextStep(
+    employee: Employee,
+    chatId: number,
+    telegramId: bigint,
+    state: SessionState,
+    sessionData: unknown,
+    text: string | null,
+  ): Promise<boolean> {
+    if (
+      state !== "ADMIN_ADD_USER_TELEGRAM_ID" &&
+      state !== "ADMIN_ADD_USER_FULL_NAME" &&
+      state !== "ADMIN_ADD_USER_EMPLOYEE_CODE" &&
+      state !== "ADMIN_ADD_USER_PHONE"
+    ) {
+      return false;
+    }
+
+    const addUserDraft = parseSessionData(sessionData, adminAddUserSessionSchema);
+    const isEdit = addUserDraft?.mode === "edit";
+
+    if (state === "ADMIN_ADD_USER_TELEGRAM_ID") {
+      const wantsSkip = isEdit && isSkipText(text);
+      const nextTelegramId = wantsSkip ? addUserDraft?.telegramId : text?.trim() ?? undefined;
+      const hasValidTelegramId = nextTelegramId ? /^\d+$/.test(nextTelegramId) : false;
+
+      if ((!isEdit && !hasValidTelegramId) || (nextTelegramId && !hasValidTelegramId)) {
+        await this.safeSendMessage(
+          chatId,
+          isEdit
+            ? "Отправьте корректный Telegram ID или нажмите «Пропустить», чтобы оставить текущий."
+            : "Отправьте корректный Telegram ID пользователя.",
+          isEdit ? buildSkipReplyKeyboard() : undefined,
+        );
+        return true;
+      }
+
+      await this.appContext.sessionService.setState(telegramId, employee.id, "ADMIN_ADD_USER_FULL_NAME", {
+        ...addUserDraft,
+        mode: addUserDraft?.mode ?? "create",
+        employeeId: addUserDraft?.employeeId,
+        telegramId: nextTelegramId,
+      });
+      await this.safeSendMessage(
+        chatId,
+        isEdit
+          ? "Введите ФИО пользователя или нажмите «Пропустить», чтобы оставить текущее."
+          : "Введите ФИО пользователя.",
+        isEdit ? buildSkipReplyKeyboard() : undefined,
+      );
+      return true;
+    }
+
+    if (!addUserDraft || (!addUserDraft.telegramId && !isEdit)) {
+      await this.handleStaleAdminAddUserSession(employee, chatId, telegramId);
+      return true;
+    }
+
+    if (state === "ADMIN_ADD_USER_FULL_NAME") {
+      const keepCurrentValue = isEdit && isSkipText(text) && Boolean(addUserDraft.fullName);
+      const nextFullName = keepCurrentValue ? addUserDraft.fullName : text;
+
+      if (!nextFullName || nextFullName.length < 3) {
+        await this.safeSendMessage(
+          chatId,
+          isEdit
+            ? "ФИО должно содержать минимум 3 символа или оставьте текущее через «Пропустить»."
+            : "ФИО должно содержать минимум 3 символа.",
+          isEdit ? buildSkipReplyKeyboard() : undefined,
+        );
+        return true;
+      }
+
+      await this.appContext.sessionService.setState(telegramId, employee.id, "ADMIN_ADD_USER_EMPLOYEE_CODE", {
+        ...addUserDraft,
+        fullName: nextFullName,
+      });
+      await this.safeSendMessage(
+        chatId,
+        isEdit
+          ? "Введите код сотрудника или нажмите «Пропустить», чтобы оставить текущий."
+          : "Введите код сотрудника.",
+        isEdit ? buildSkipReplyKeyboard() : undefined,
+      );
+      return true;
+    }
+
+    if (!addUserDraft.fullName) {
+      await this.handleStaleAdminAddUserSession(employee, chatId, telegramId);
+      return true;
+    }
+
+    if (state === "ADMIN_ADD_USER_EMPLOYEE_CODE") {
+      const keepCurrentValue = isEdit && isSkipText(text) && Boolean(addUserDraft.employeeCode);
+      const nextEmployeeCode = keepCurrentValue ? addUserDraft.employeeCode : text;
+
+      if (!nextEmployeeCode || nextEmployeeCode.length < 2) {
+        await this.safeSendMessage(
+          chatId,
+          isEdit
+            ? "Код сотрудника должен содержать минимум 2 символа или оставьте текущий через «Пропустить»."
+            : "Код сотрудника должен содержать минимум 2 символа.",
+          isEdit ? buildSkipReplyKeyboard() : undefined,
+        );
+        return true;
+      }
+
+      await this.appContext.sessionService.setState(telegramId, employee.id, "ADMIN_ADD_USER_PHONE", {
+        ...addUserDraft,
+        employeeCode: nextEmployeeCode,
+      });
+      await this.safeSendMessage(
+        chatId,
+        isEdit
+          ? "Введите номер телефона в формате 998901234567 или нажмите «Пропустить», чтобы оставить текущий."
+          : "Введите номер телефона в формате 998901234567 или нажмите «Пропустить», если телефона нет.",
+        buildSkipReplyKeyboard(),
+      );
+      return true;
+    }
+
+    if (!addUserDraft.employeeCode) {
+      await this.handleStaleAdminAddUserSession(employee, chatId, telegramId);
+      return true;
+    }
+
+    if (state === "ADMIN_ADD_USER_PHONE") {
+      let nextPhoneE164 = addUserDraft.phoneE164 ?? null;
+
+      if (!isSkipText(text)) {
+        if (!text) {
+          await this.safeSendMessage(
+            chatId,
+            "Введите номер телефона в формате 998901234567 или нажмите «Пропустить».",
+            buildSkipReplyKeyboard(),
+          );
+          return true;
+        }
+
+        nextPhoneE164 = normalizeUzPhone(text);
+      }
+
+      await this.appContext.sessionService.setState(telegramId, employee.id, "ADMIN_ADD_USER_ROLE", {
+        ...addUserDraft,
+        phoneE164: nextPhoneE164,
+      });
+      await this.safeSendMessage(
+        chatId,
+        "Выберите роль пользователя.",
+        buildRoleSelectionKeyboard(TELEGRAM_CALLBACKS.ADMIN_ADD_USER_ROLE, {
+          includeCancel: true,
+        }),
+      );
+      return true;
+    }
+
+    return false;
+  }
+
   private async openAdminUserManagementMenu(employee: Employee, chatId: number, telegramId: bigint): Promise<void> {
     if (employee.role !== EmployeeRole.ADMIN) {
       throw new ValidationAppError("Раздел управления пользователями доступен только администратору.");
@@ -2190,16 +2417,64 @@ export class TelegramBotTransport {
   }
 
   private async showUsersList(employee: Employee, chatId: number): Promise<void> {
-    const employees = await this.appContext.employeeService.listEmployees();
-    await this.safeSendMessage(chatId, formatEmployeesList(employees), buildMainMenu(employee.role, false));
+    await this.showManagedUsersList(employee, chatId);
+  }
 
-    for (const item of employees.slice(0, 10)) {
+  private async showManagedUsersList(employee: Employee, chatId: number): Promise<void> {
+    const employees = await this.appContext.employeeService.listEmployees({
+      includeDeleted: true,
+    });
+
+    await this.safeSendMessage(
+      chatId,
+      "Список пользователей. Для каждого сотрудника доступны редактирование, удаление, восстановление и смена статуса.",
+      buildMainMenu(employee.role, false),
+    );
+
+    for (const item of employees.slice(0, 15)) {
       await this.safeSendMessage(
         chatId,
-        `${item.fullName} (${item.employeeCode})`,
-        buildEmployeeToggleKeyboard(item.id, item.isActive),
+        formatEmployeeManagementCard(item),
+        buildEmployeeManagementKeyboard(item.id, {
+          isActive: item.isActive,
+          isDeleted: item.deletedAt !== null,
+        }),
       );
     }
+  }
+
+  private async startAdminEditUserFlow(
+    employee: Employee,
+    chatId: number,
+    telegramId: bigint,
+    targetEmployeeId: string,
+  ): Promise<void> {
+    const targetEmployee = await this.appContext.userManagementService.getEmployeeById(targetEmployeeId, {
+      includeDeleted: true,
+    });
+
+    if (!targetEmployee) {
+      throw new NotFoundAppError("Пользователь не найден.");
+    }
+
+    await this.appContext.sessionService.setState(telegramId, employee.id, "ADMIN_ADD_USER_TELEGRAM_ID", {
+      mode: "edit",
+      employeeId: targetEmployee.id,
+      ...(targetEmployee.telegramId ? { telegramId: targetEmployee.telegramId.toString() } : {}),
+      fullName: targetEmployee.fullName,
+      employeeCode: targetEmployee.employeeCode,
+      phoneE164: targetEmployee.phoneE164,
+      role: targetEmployee.role,
+      isActive: targetEmployee.isActive,
+    });
+    await this.safeSendMessage(
+      chatId,
+      formatAdminAddUserIntro({
+        mode: "edit",
+        fullName: targetEmployee.fullName,
+      }),
+      buildSkipReplyKeyboard(),
+    );
   }
 
   private async showPendingRegistrationRequests(employee: Employee, chatId: number, telegramId: bigint): Promise<void> {
@@ -2242,7 +2517,9 @@ export class TelegramBotTransport {
     }
 
     const request = await this.appContext.registrationRequestService.getRegistrationRequestDetails(employee, draft.requestId);
-    const existingEmployee = await this.appContext.userManagementService.getEmployeeByTelegramId(request.telegramId);
+    const existingEmployee = await this.appContext.userManagementService.getEmployeeByTelegramId(request.telegramId, {
+      includeDeleted: true,
+    });
 
     await this.appContext.sessionService.setState(telegramId, employee.id, "ADMIN_REGISTRATION_APPROVE_CONFIRM", draft);
     await this.safeSendMessage(
@@ -2298,7 +2575,7 @@ export class TelegramBotTransport {
   ): Promise<void> {
     const addUserDraft = parseSessionData(sessionData, adminAddUserSessionSchema);
 
-    if (!addUserDraft?.telegramId || !addUserDraft.fullName || !addUserDraft.employeeCode) {
+    if (!addUserDraft?.fullName || !addUserDraft.employeeCode || (addUserDraft.mode !== "edit" && !addUserDraft.telegramId)) {
       await this.handleStaleAdminAddUserSession(employee, chatId, telegramId);
       await this.safeAnswerCallback(callbackId, "Сессия устарела.");
       return;
@@ -2328,7 +2605,7 @@ export class TelegramBotTransport {
   ): Promise<void> {
     const addUserDraft = parseSessionData(sessionData, adminAddUserSessionSchema);
 
-    if (!addUserDraft?.telegramId || !addUserDraft.fullName || !addUserDraft.employeeCode || !addUserDraft.role) {
+    if (!addUserDraft?.fullName || !addUserDraft.employeeCode || !addUserDraft.role || (addUserDraft.mode !== "edit" && !addUserDraft.telegramId)) {
       await this.handleStaleAdminAddUserSession(employee, chatId, telegramId);
       await this.safeAnswerCallback(callbackId, "Сессия устарела.");
       return;
@@ -2344,13 +2621,20 @@ export class TelegramBotTransport {
     await this.safeSendMessage(
       chatId,
       formatAdminAddUserPreview({
-        telegramId: BigInt(nextDraft.telegramId),
+        telegramId: nextDraft.telegramId ? BigInt(String(nextDraft.telegramId)) : null,
         fullName: nextDraft.fullName!,
         employeeCode: nextDraft.employeeCode!,
+        phoneE164: nextDraft.phoneE164 ?? null,
         role: nextDraft.role!,
         isActive,
+        mode: nextDraft.mode ?? "create",
       }),
-      buildAdminUserPreviewKeyboard(),
+      buildAdminUserPreviewKeyboard({
+        isEdit: nextDraft.mode === "edit",
+        restartCallbackData: nextDraft.employeeId
+          ? `${TELEGRAM_CALLBACKS.EMPLOYEE_EDIT}:${nextDraft.employeeId}`
+          : `${TELEGRAM_CALLBACKS.USER_MANAGEMENT_MENU}:ADD`,
+      }),
     );
   }
 
@@ -2363,18 +2647,52 @@ export class TelegramBotTransport {
   ): Promise<void> {
     const addUserDraft = parseSessionData(sessionData, adminAddUserSessionSchema);
 
-    if (!addUserDraft?.telegramId || !addUserDraft.fullName || !addUserDraft.employeeCode || !addUserDraft.role || addUserDraft.isActive === undefined) {
+    if (!canSaveAdminUserDraft(addUserDraft)) {
       await this.handleStaleAdminAddUserSession(employee, chatId, telegramId);
       await this.safeAnswerCallback(callbackId, "Сессия устарела.");
       return;
     }
 
-    const createdEmployee = await this.appContext.userManagementService.createEmployeeByAdmin(employee, {
-      telegramId: BigInt(addUserDraft.telegramId),
+    const mutationInput = {
+      ...(addUserDraft.telegramId ? { telegramId: BigInt(addUserDraft.telegramId) } : {}),
       fullName: addUserDraft.fullName,
       employeeCode: addUserDraft.employeeCode,
+      phoneE164: addUserDraft.phoneE164 ?? null,
       role: addUserDraft.role,
       isActive: addUserDraft.isActive,
+    };
+    const managedUserResult = addUserDraft.mode === "edit" && addUserDraft.employeeId
+      ? await this.appContext.userManagementService.updateEmployee(employee, addUserDraft.employeeId, mutationInput)
+      : await this.appContext.userManagementService.createEmployeeByAdmin(employee, mutationInput);
+    const saveAction = managedUserResult.action === "RESTORED"
+      ? "RESTORED"
+      : managedUserResult.action === "UPDATED"
+        ? "UPDATED"
+        : "CREATED";
+
+    await this.appContext.sessionService.reset(telegramId, employee.id);
+    await this.safeAnswerCallback(
+      callbackId,
+      managedUserResult.action === "CREATED"
+        ? "Пользователь создан."
+        : managedUserResult.action === "RESTORED"
+          ? "Пользователь восстановлен."
+          : "Пользователь обновлён.",
+    );
+    await this.safeSendMessage(
+      chatId,
+      formatUserSavedMessage(managedUserResult.employee, saveAction),
+      buildMainMenu(employee.role, false),
+    );
+    return;
+
+    const createdEmployee = await this.appContext.userManagementService.createEmployeeByAdmin(employee, {
+      telegramId: BigInt(String(addUserDraft!.telegramId)),
+      fullName: addUserDraft!.fullName!,
+      employeeCode: addUserDraft!.employeeCode!,
+      phoneE164: addUserDraft!.phoneE164 ?? null,
+      role: addUserDraft!.role!,
+      isActive: addUserDraft!.isActive!,
     });
 
     await this.appContext.sessionService.reset(telegramId, employee.id);

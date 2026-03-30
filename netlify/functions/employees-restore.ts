@@ -7,9 +7,9 @@ import { createRequestId, handleHttpError, jsonResponse, parseJsonBody, requireM
 import { employeeUpdateSchema } from "../../src/lib/validators";
 import { authorizeHttpRequest } from "../../src/transport/http-admin";
 
-const updateBodySchema = z.object({
+const restoreBodySchema = z.object({
   employeeId: z.string().trim().min(1),
-  data: employeeUpdateSchema,
+  data: employeeUpdateSchema.optional().default({}),
 });
 
 export const handler: Handler = async (event) => {
@@ -17,10 +17,10 @@ export const handler: Handler = async (event) => {
   const appContext = createAppContext(requestId);
 
   try {
-    requireMethod(event, ["PATCH"]);
+    requireMethod(event, ["POST"]);
     const actor = await authorizeHttpRequest(appContext, event, [EmployeeRole.ADMIN]);
-    const payload = parseJsonBody(event, updateBodySchema);
-    const result = await appContext.employeeService.updateEmployee(actor, payload.employeeId, payload.data);
+    const payload = parseJsonBody(event, restoreBodySchema);
+    const result = await appContext.employeeService.restoreEmployee(actor, payload.employeeId, payload.data);
 
     return jsonResponse(200, {
       ok: true,

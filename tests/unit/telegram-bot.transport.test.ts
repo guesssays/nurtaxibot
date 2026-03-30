@@ -273,3 +273,46 @@ describe("TelegramBotTransport admin text and export flow", () => {
     vi.useRealTimers();
   });
 });
+
+describe("TelegramBotTransport admin user management flow", () => {
+  it("shows employee management actions for existing user", async () => {
+    const harness = createTransportHarness({ role: EmployeeRole.ADMIN });
+
+    await harness.transport.handleUpdate(createMessageUpdate(ADMIN_MENU_LABELS.MANAGE_EMPLOYEES, 100));
+
+    const managementCard = harness.messages.find((message) => message.text?.includes("Managed Employee"));
+    const actionButtons = (managementCard?.reply_markup as { inline_keyboard: Array<Array<{ text: string }>> }).inline_keyboard
+      .flat()
+      .map((button) => button.text);
+
+    expect(actionButtons).toEqual(expect.arrayContaining(["Редактировать", "Удалить"]));
+  });
+
+  it("allows admin to edit phone and role for existing employee", async () => {
+    const harness = createTransportHarness({ role: EmployeeRole.ADMIN });
+
+    await harness.transport.handleUpdate(createCallbackUpdate(`${TELEGRAM_CALLBACKS.EMPLOYEE_EDIT}:emp-managed-1`, 101));
+    await harness.transport.handleUpdate(createMessageUpdate("Пропустить", 102));
+    await harness.transport.handleUpdate(createMessageUpdate("Updated Managed Employee", 103));
+    await harness.transport.handleUpdate(createMessageUpdate("EMP-778", 104));
+    await harness.transport.handleUpdate(createMessageUpdate("998909999888", 105));
+    await harness.transport.handleUpdate(createCallbackUpdate(`${TELEGRAM_CALLBACKS.ADMIN_ADD_USER_ROLE}:SUPERVISOR`, 106));
+    await harness.transport.handleUpdate(createCallbackUpdate(`${TELEGRAM_CALLBACKS.ADMIN_ADD_USER_ACTIVE}:true`, 107));
+    await harness.transport.handleUpdate(createCallbackUpdate(TELEGRAM_CALLBACKS.ADMIN_ADD_USER_SAVE, 108));
+
+    const lastMessage = harness.messages.at(-1);
+    expect(lastMessage?.text).toContain("Пользователь обновлён");
+    expect(lastMessage?.text).toContain("+998909999888");
+    expect(lastMessage?.text).toContain("Супервайзер");
+  });
+
+  it("allows admin to delete and restore employee", async () => {
+    const harness = createTransportHarness({ role: EmployeeRole.ADMIN });
+
+    await harness.transport.handleUpdate(createCallbackUpdate(`${TELEGRAM_CALLBACKS.EMPLOYEE_DELETE}:emp-managed-1`, 109));
+    expect(harness.messages.at(-1)?.text).toContain("удалён");
+
+    await harness.transport.handleUpdate(createCallbackUpdate(`${TELEGRAM_CALLBACKS.EMPLOYEE_RESTORE}:emp-managed-1`, 110));
+    expect(harness.messages.at(-1)?.text).toContain("Пользователь восстановлен");
+  });
+});

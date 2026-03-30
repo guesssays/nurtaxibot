@@ -11,12 +11,19 @@ type RequestRecord = UserRegistrationRequest & {
   approvedEmployee?: Pick<Employee, "fullName" | "employeeCode" | "role" | "isActive"> | null;
 };
 
+type ManagedEmployeeRecord = Pick<
+  Employee,
+  "id" | "telegramId" | "fullName" | "employeeCode" | "phoneE164" | "role" | "isActive" | "deletedAt"
+>;
+
 export interface AdminAddUserPreviewPayload {
-  telegramId: bigint;
+  telegramId: bigint | null;
   fullName: string;
   employeeCode: string;
+  phoneE164: string | null;
   role: Employee["role"];
   isActive: boolean;
+  mode: "create" | "edit";
 }
 
 export interface GuestRegistrationPreviewPayload {
@@ -35,7 +42,7 @@ export function formatInactiveAccountMessage(fullName?: string): string {
 
 export function formatGuestRegistrationEntryMessage(): string {
   return [
-    "Вы еще не зарегистрированы в системе.",
+    "Вы ещё не зарегистрированы в системе.",
     "",
     "Можно отправить заявку администратору или проверить статус уже отправленной заявки.",
   ].join("\n");
@@ -43,7 +50,7 @@ export function formatGuestRegistrationEntryMessage(): string {
 
 export function formatGuestRegistrationStatus(request: RequestRecord | null, timezoneName: string): string {
   if (!request) {
-    return "Заявка на регистрацию еще не создавалась.";
+    return "Заявка на регистрацию ещё не создавалась.";
   }
 
   const lines = [
@@ -88,29 +95,51 @@ export function formatRegistrationRequestCreated(): string {
   return "Заявка отправлена администратору. Вы можете проверить статус позже этой же кнопкой.";
 }
 
-export function formatAdminAddUserIntro(): string {
+export function formatAdminAddUserIntro(options?: { mode?: "create" | "edit"; fullName?: string }): string {
+  if (options?.mode === "edit") {
+    return `Редактирование пользователя${options.fullName ? ` ${options.fullName}` : ""}. Отправьте Telegram ID.`;
+  }
+
   return "Добавление пользователя. Отправьте Telegram ID нового пользователя.";
 }
 
 export function formatAdminAddUserPreview(payload: AdminAddUserPreviewPayload): string {
   return [
-    "Проверьте данные пользователя:",
-    `Telegram ID: ${payload.telegramId.toString()}`,
+    payload.mode === "edit" ? "Проверьте обновлённые данные пользователя:" : "Проверьте данные пользователя:",
+    `Telegram ID: ${payload.telegramId ? payload.telegramId.toString() : "РЅРµ СѓРєР°Р·Р°РЅ"}`,
     `ФИО: ${payload.fullName}`,
     `Код сотрудника: ${payload.employeeCode}`,
+    `Телефон: ${payload.phoneE164 ?? "не указан"}`,
     `Роль: ${ROLE_LABELS[payload.role]}`,
     `Статус: ${payload.isActive ? "активен" : "не активен"}`,
   ].join("\n");
 }
 
-export function formatUserCreatedMessage(employee: Employee): string {
+export function formatUserSavedMessage(
+  employee: ManagedEmployeeRecord,
+  action: "CREATED" | "UPDATED" | "RESTORED",
+): string {
+  const actionTitle =
+    action === "CREATED"
+      ? "Пользователь создан."
+      : action === "RESTORED"
+        ? "Пользователь восстановлен."
+        : "Пользователь обновлён.";
+
   return [
-    "Пользователь сохранен.",
+    actionTitle,
     `ФИО: ${employee.fullName}`,
     `Код сотрудника: ${employee.employeeCode}`,
+    `Телефон: ${employee.phoneE164 ?? "не указан"}`,
     `Роль: ${ROLE_LABELS[employee.role]}`,
-    `Статус: ${employee.isActive ? "активен" : "не активен"}`,
+    `Статус: ${employee.deletedAt ? "удалён" : employee.isActive ? "активен" : "не активен"}`,
   ].join("\n");
+}
+
+export function formatUserCreatedMessage(
+  employee: ManagedEmployeeRecord | { employee: ManagedEmployeeRecord },
+): string {
+  return formatUserSavedMessage("employee" in employee ? employee.employee : employee, "CREATED");
 }
 
 export function formatPendingRegistrationRequests(
@@ -157,7 +186,7 @@ export function formatRegistrationRequestDetails(
     `Телефон: ${request.phone ?? "не указан"}`,
     `Запрошенная роль: ${request.requestedRole ? ROLE_LABELS[request.requestedRole] : "не указана"}`,
     `Комментарий: ${request.comment ?? "нет"}`,
-    `Проверил: ${request.reviewedBy?.fullName ?? "еще не проверена"}`,
+    `Проверил: ${request.reviewedBy?.fullName ?? "ещё не проверена"}`,
     `Комментарий проверки: ${request.reviewComment ?? "нет"}`,
   ].join("\n");
 }
@@ -177,7 +206,7 @@ export function formatAdminApprovalPreview(payload: {
     `Код сотрудника: ${payload.employeeCode}`,
     `Роль: ${ROLE_LABELS[payload.role]}`,
     payload.willReactivateExistingEmployee
-      ? "Будет обновлен существующий пользователь."
+      ? "Будет обновлён или восстановлен существующий пользователь."
       : "Будет создан новый пользователь.",
   ].join("\n");
 }
@@ -201,4 +230,16 @@ export function formatRegistrationRejectedMessage(reviewComment?: string | null)
   return reviewComment
     ? `Ваша заявка отклонена.\nКомментарий: ${reviewComment}`
     : "Ваша заявка отклонена.";
+}
+
+export function formatEmployeeManagementCard(employee: ManagedEmployeeRecord): string {
+  return [
+    `Пользователь: ${employee.fullName}`,
+    `ID: ${employee.id}`,
+    `Telegram ID: ${employee.telegramId?.toString() ?? "не указан"}`,
+    `Код сотрудника: ${employee.employeeCode}`,
+    `Телефон: ${employee.phoneE164 ?? "не указан"}`,
+    `Роль: ${ROLE_LABELS[employee.role]}`,
+    `Статус: ${employee.deletedAt ? "удалён" : employee.isActive ? "активен" : "не активен"}`,
+  ].join("\n");
 }

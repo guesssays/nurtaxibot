@@ -14,11 +14,12 @@ export const handler: Handler = async (event) => {
     requireMethod(event, ["POST"]);
     const actor = await authorizeHttpRequest(appContext, event, [EmployeeRole.ADMIN]);
     const payload = parseJsonBody(event, employeeCreateSchema);
-    const employee = await appContext.employeeService.createEmployee(actor, payload);
+    const result = await appContext.employeeService.createEmployee(actor, payload);
 
     return jsonResponse(201, {
       ok: true,
-      employee,
+      action: result.action,
+      employee: result.employee,
     });
   } catch (error: unknown) {
     return handleHttpError(error, appContext.logger);

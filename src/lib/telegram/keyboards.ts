@@ -143,12 +143,46 @@ export function buildAdminUserActiveKeyboard(): InlineKeyboardMarkup {
   };
 }
 
-export function buildAdminUserPreviewKeyboard(): InlineKeyboardMarkup {
+export function buildAdminUserPreviewKeyboard(options?: {
+  isEdit?: boolean;
+  restartCallbackData?: string;
+}): InlineKeyboardMarkup {
   return {
     inline_keyboard: [
-      [{ text: "Сохранить", callback_data: TELEGRAM_CALLBACKS.ADMIN_ADD_USER_SAVE }],
-      [{ text: "Изменить", callback_data: `${TELEGRAM_CALLBACKS.USER_MANAGEMENT_MENU}:ADD` }],
+      [{ text: options?.isEdit ? "Сохранить изменения" : "Сохранить", callback_data: TELEGRAM_CALLBACKS.ADMIN_ADD_USER_SAVE }],
+      [{ text: "Изменить", callback_data: options?.restartCallbackData ?? `${TELEGRAM_CALLBACKS.USER_MANAGEMENT_MENU}:ADD` }],
       [{ text: GUEST_MENU_LABELS.CANCEL, callback_data: TELEGRAM_CALLBACKS.ADMIN_ADD_USER_CANCEL }],
+    ],
+  };
+}
+
+export function buildEmployeeManagementKeyboard(
+  employeeId: string,
+  options: {
+    isActive: boolean;
+    isDeleted: boolean;
+  },
+): InlineKeyboardMarkup {
+  if (options.isDeleted) {
+    return {
+      inline_keyboard: [[
+        { text: "Восстановить", callback_data: `${TELEGRAM_CALLBACKS.EMPLOYEE_RESTORE}:${employeeId}` },
+      ]],
+    };
+  }
+
+  return {
+    inline_keyboard: [
+      [
+        { text: "Редактировать", callback_data: `${TELEGRAM_CALLBACKS.EMPLOYEE_EDIT}:${employeeId}` },
+        {
+          text: options.isActive ? "Деактивировать" : "Активировать",
+          callback_data: `${TELEGRAM_CALLBACKS.EMPLOYEE_TOGGLE}:${employeeId}`,
+        },
+      ],
+      [
+        { text: "Удалить", callback_data: `${TELEGRAM_CALLBACKS.EMPLOYEE_DELETE}:${employeeId}` },
+      ],
     ],
   };
 }
@@ -270,17 +304,6 @@ export function buildAdminExportKeyboard(): InlineKeyboardMarkup {
       ],
       [{ text: EXPORT_PERIOD_LABELS.ALL_TIME, callback_data: `${TELEGRAM_CALLBACKS.EXPORT}:ALL_TIME` }],
     ],
-  };
-}
-
-export function buildEmployeeToggleKeyboard(employeeId: string, isActive: boolean): InlineKeyboardMarkup {
-  return {
-    inline_keyboard: [[
-      {
-        text: isActive ? "Деактивировать" : "Активировать",
-        callback_data: `${TELEGRAM_CALLBACKS.EMPLOYEE_TOGGLE}:${employeeId}`,
-      },
-    ]],
   };
 }
 

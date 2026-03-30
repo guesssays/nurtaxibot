@@ -18,17 +18,55 @@ async function main(): Promise<void> {
 
   const telegramId = BigInt(telegramIdRaw);
 
-  await prisma.employee.upsert({
+  const existing = await prisma.employee.findFirst({
     where: {
       employeeCode,
+      deletedAt: null,
     },
-    update: {
-      fullName,
-      telegramId,
-      role: EmployeeRole.ADMIN,
-      isActive: true,
+  });
+
+  if (existing) {
+    await prisma.employee.update({
+      where: {
+        id: existing.id,
+      },
+      data: {
+        fullName,
+        telegramId,
+        role: EmployeeRole.ADMIN,
+        isActive: true,
+      },
+    });
+    return;
+  }
+
+  const deletedExisting = await prisma.employee.findFirst({
+    where: {
+      employeeCode,
+      deletedAt: {
+        not: null,
+      },
     },
-    create: {
+  });
+
+  if (deletedExisting) {
+    await prisma.employee.update({
+      where: {
+        id: deletedExisting.id,
+      },
+      data: {
+        fullName,
+        telegramId,
+        role: EmployeeRole.ADMIN,
+        isActive: true,
+        deletedAt: null,
+      },
+    });
+    return;
+  }
+
+  await prisma.employee.create({
+    data: {
       fullName,
       telegramId,
       employeeCode,

@@ -6,6 +6,8 @@ import {
 } from "@prisma/client";
 import { z } from "zod";
 
+import { normalizeUzPhone } from "./phone";
+
 const telegramIdSchema = z
   .union([z.string(), z.number(), z.bigint()])
   .transform((value) => BigInt(value))
@@ -15,6 +17,7 @@ export const employeeCreateSchema = z.object({
   telegramId: telegramIdSchema.optional(),
   employeeCode: z.string().trim().min(2).max(64),
   fullName: z.string().trim().min(3).max(255),
+  phoneE164: z.string().trim().min(1).max(32).transform(normalizeUzPhone).optional().nullable(),
   role: z.nativeEnum(EmployeeRole).default(EmployeeRole.EMPLOYEE),
   isActive: z.boolean().default(true),
 });
@@ -23,6 +26,7 @@ export const employeeUpdateSchema = z.object({
   telegramId: telegramIdSchema.nullable().optional(),
   employeeCode: z.string().trim().min(2).max(64).optional(),
   fullName: z.string().trim().min(3).max(255).optional(),
+  phoneE164: z.string().trim().min(1).max(32).transform(normalizeUzPhone).nullable().optional(),
   role: z.nativeEnum(EmployeeRole).optional(),
   isActive: z.boolean().optional(),
 });

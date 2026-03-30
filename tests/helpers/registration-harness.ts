@@ -22,8 +22,10 @@ export function createEmployee(overrides: Partial<Employee> = {}): Employee {
     telegramId: overrides.telegramId ?? BigInt(1000 + Math.floor(Math.random() * 10000)),
     employeeCode: overrides.employeeCode ?? "EMP-001",
     fullName: overrides.fullName ?? "Test Employee",
+    phoneE164: overrides.phoneE164 ?? null,
     role: overrides.role ?? EmployeeRole.EMPLOYEE,
     isActive: overrides.isActive ?? true,
+    deletedAt: overrides.deletedAt ?? null,
     createdAt: overrides.createdAt ?? new Date(),
     updatedAt: overrides.updatedAt ?? new Date(),
   };

@@ -106,8 +106,10 @@ export function createTransportHarness(options: TransportHarnessOptions = {}) {
     telegramId: BigInt(5422089180),
     employeeCode: "EMP-001",
     fullName: "Employee Test",
+    phoneE164: null,
     role: options.role ?? EmployeeRole.EMPLOYEE,
     isActive: true,
+    deletedAt: null,
     createdAt: new Date(),
     updatedAt: new Date(),
   };
@@ -119,6 +121,31 @@ export function createTransportHarness(options: TransportHarnessOptions = {}) {
     state: SessionState;
     dataJson: unknown;
   } | null = null;
+  const managedEmployees: Employee[] = [
+    employee,
+    {
+      id: "emp-managed-1",
+      telegramId: BigInt(7001),
+      employeeCode: "EMP-777",
+      fullName: "Managed Employee",
+      phoneE164: "+998901111222",
+      role: EmployeeRole.EMPLOYEE,
+      isActive: true,
+      deletedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    },
+  ];
+
+  function findManagedEmployee(employeeId: string): Employee {
+    const target = managedEmployees.find((item) => item.id === employeeId);
+
+    if (!target) {
+      throw new Error("Managed employee not found.");
+    }
+
+    return target;
+  }
 
   const logger = createLogger(logs);
   const telegramClient = {
@@ -232,8 +259,100 @@ export function createTransportHarness(options: TransportHarnessOptions = {}) {
         return session;
       },
     } as never,
-    employeeService: {} as never,
-    userManagementService: {} as never,
+    employeeService: {
+      listEmployees: async ({ includeDeleted }: { includeDeleted?: boolean } = {}) =>
+        managedEmployees.filter((item) => includeDeleted || item.deletedAt === null),
+      toggleEmployeeActive: async (_actor: Employee, employeeId: string) => {
+        const target = findManagedEmployee(employeeId);
+        target.isActive = !target.isActive;
+        target.updatedAt = new Date();
+        return target;
+      },
+      deleteEmployee: async (_actor: Employee, employeeId: string) => {
+        const target = findManagedEmployee(employeeId);
+        target.isActive = false;
+        target.deletedAt = new Date();
+        target.updatedAt = new Date();
+        return {
+          action: "DELETED" as const,
+          employee: target,
+        };
+      },
+      restoreEmployee: async (_actor: Employee, employeeId: string, data: Record<string, unknown> = {}) => {
+        const target = findManagedEmployee(employeeId);
+        target.deletedAt = null;
+        target.isActive = data.isActive === undefined ? true : Boolean(data.isActive);
+        if (typeof data.phoneE164 === "string" || data.phoneE164 === null) {
+          target.phoneE164 = (data.phoneE164 as string | null) ?? null;
+        }
+        if (typeof data.fullName === "string") {
+          target.fullName = data.fullName;
+        }
+        if (typeof data.employeeCode === "string") {
+          target.employeeCode = data.employeeCode;
+        }
+        if (typeof data.telegramId === "bigint") {
+          target.telegramId = data.telegramId;
+        }
+        if (typeof data.role === "string") {
+          target.role = data.role as EmployeeRole;
+        }
+        target.updatedAt = new Date();
+        return {
+          action: "RESTORED" as const,
+          employee: target,
+        };
+      },
+    } as never,
+    userManagementService: {
+      getEmployeeById: async (employeeId: string) =>
+        managedEmployees.find((item) => item.id === employeeId) ?? null,
+      updateEmployee: async (_actor: Employee, employeeId: string, data: Record<string, unknown>) => {
+        const target = findManagedEmployee(employeeId);
+        if (typeof data.telegramId === "bigint") {
+          target.telegramId = data.telegramId;
+        }
+        if (typeof data.fullName === "string") {
+          target.fullName = data.fullName;
+        }
+        if (typeof data.employeeCode === "string") {
+          target.employeeCode = data.employeeCode;
+        }
+        if (typeof data.phoneE164 === "string" || data.phoneE164 === null) {
+          target.phoneE164 = (data.phoneE164 as string | null) ?? null;
+        }
+        if (typeof data.role === "string") {
+          target.role = data.role as EmployeeRole;
+        }
+        if (typeof data.isActive === "boolean") {
+          target.isActive = data.isActive;
+        }
+        target.updatedAt = new Date();
+        return {
+          action: "UPDATED" as const,
+          employee: target,
+        };
+      },
+      createEmployeeByAdmin: async (_actor: Employee, data: Record<string, unknown>) => {
+        const created: Employee = {
+          id: `emp-managed-${managedEmployees.length + 1}`,
+          telegramId: typeof data.telegramId === "bigint" ? data.telegramId : null,
+          employeeCode: typeof data.employeeCode === "string" ? data.employeeCode : "EMP-NEW",
+          fullName: typeof data.fullName === "string" ? data.fullName : "Created Employee",
+          phoneE164: typeof data.phoneE164 === "string" ? data.phoneE164 : null,
+          role: typeof data.role === "string" ? (data.role as EmployeeRole) : EmployeeRole.EMPLOYEE,
+          isActive: typeof data.isActive === "boolean" ? data.isActive : true,
+          deletedAt: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+        managedEmployees.push(created);
+        return {
+          action: "CREATED" as const,
+          employee: created,
+        };
+      },
+    } as never,
     registrationRequestService: {} as never,
     broadcastService: {} as never,
     registrationService: {

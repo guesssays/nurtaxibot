@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ForbiddenAppError } from "../../src/lib/errors";
 import { NotificationService } from "../../src/services/notification.service";
 import { RegistrationRequestService } from "../../src/services/registration-request.service";
+import { UserManagementService } from "../../src/services/user-management.service";
 import {
   installMockPrismaTransaction,
   resetMockPrismaTransaction,
@@ -34,9 +35,11 @@ describe("RegistrationRequestService", () => {
     const requestRepository = new InMemoryRegistrationRequestRepository();
     const auditService = new InMemoryAuditService();
     const notificationService = new NotificationSpyService();
+    const userManagementService = new UserManagementService(employeeRepository as never, auditService as never);
     const service = new RegistrationRequestService(
       requestRepository as never,
       employeeRepository as never,
+      userManagementService as never,
       auditService as never,
       notificationService as never,
       "Asia/Tashkent",
@@ -83,7 +86,7 @@ describe("RegistrationRequestService", () => {
     expect(second.request.id).toBe(first.request.id);
   });
 
-  it("approve creates or activates employee", async () => {
+  it("approve creates, updates or restores employee", async () => {
     const admin = createAdmin();
     const existingInactive = createEmployee({
       id: "emp_inactive",
@@ -91,6 +94,7 @@ describe("RegistrationRequestService", () => {
       employeeCode: "OLD-001",
       fullName: "Old Name",
       isActive: false,
+      deletedAt: new Date("2026-03-01T00:00:00.000Z"),
       role: EmployeeRole.EMPLOYEE,
     });
     const { service, employeeRepository, requestRepository, notificationService } = createService([admin, existingInactive]);
@@ -115,6 +119,7 @@ describe("RegistrationRequestService", () => {
     expect(employee?.isActive).toBe(true);
     expect(employee?.role).toBe(EmployeeRole.SUPERVISOR);
     expect(employee?.employeeCode).toBe("EMP-111");
+    expect(employee?.deletedAt).toBeNull();
     expect(notificationService.userMessages[0]?.telegramId).toBe("600700800");
   });
 

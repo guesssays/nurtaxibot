@@ -8,8 +8,10 @@ const adminActor = {
   telegramId: BigInt(1),
   employeeCode: "ADM-001",
   fullName: "Admin Test",
+  phoneE164: null,
   role: EmployeeRole.ADMIN,
   isActive: true,
+  deletedAt: null,
   createdAt: new Date(),
   updatedAt: new Date(),
 };
